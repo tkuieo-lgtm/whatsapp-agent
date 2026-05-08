@@ -15,7 +15,8 @@ class Settings(BaseSettings):
     whatsapp_service_url: str = "http://localhost:3000"
     backend_url: str = "http://localhost:8000"
     timezone: str = "Asia/Jerusalem"
-    morning_summary_hour: int = 8
+    morning_summary_hour: int = 7
+    morning_summary_minute: int = 30
     weekly_summary_day: int = 4
     weekly_summary_hour: int = 17
     reminder_check_hours: int = 4

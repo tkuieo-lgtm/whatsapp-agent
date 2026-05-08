@@ -183,6 +183,24 @@ app.post("/send", async (req, res) => {
   }
 });
 
+// Voice note endpoint — audio_data is base64 opus audio
+app.post("/send-voice", async (req, res) => {
+  const { phone, chat_id, audio_data } = req.body;
+  if (!audio_data) {
+    return res.status(400).json({ error: "audio_data is required" });
+  }
+  const target = chat_id || `${(phone || "").replace(/\D/g, "")}@c.us`;
+  try {
+    const media = new MessageMedia("audio/ogg; codecs=opus", audio_data, "voice.ogg");
+    await client.sendMessage(target, media, { sendAudioAsVoice: true });
+    console.log(`[VOICE-OUT] Sent voice note to ${target}`);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[VOICE-OUT] Failed:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.get("/health", (_req, res) => {
   res.json({ status: client.info ? "ready" : "initializing", ready: Boolean(client.info) });
 });

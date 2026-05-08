@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, String, Text, func
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -122,6 +122,27 @@ class Reminder(Base):
             "sent": self.sent,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class Memory(Base):
+    __tablename__ = "memories"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    category = Column(String(50), nullable=False)
+    content = Column(Text, nullable=False)
+    source = Column(String(100))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_referenced = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class VoicePreference(Base):
+    __tablename__ = "voice_preferences"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    context_type = Column(String(50))
+    used_voice = Column(Boolean)
+    user_feedback = Column(String(20))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class GroupInteraction(Base):

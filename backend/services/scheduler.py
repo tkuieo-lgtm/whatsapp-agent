@@ -7,7 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import func, select
 
 from config import settings
-from database import ActionLog, AsyncSessionLocal
+from database import ActionLog, AsyncSessionLocal, Reminder
 from services import calendar_service, gmail_service, whatsapp_service
 from services.rules_engine import run_email_rules
 from services.reminder_service import check_and_send_reminders
@@ -21,29 +21,59 @@ scheduler = AsyncIOScheduler(timezone=settings.timezone)
 # ---------------------------------------------------------------------------
 
 async def _morning_summary() -> None:
+    """Daily morning briefing at 07:30 Israel time — sent as voice note."""
     try:
         events = await calendar_service.get_todays_events()
         emails = await gmail_service.get_emails_awaiting_reply(hours_threshold=0)
 
-        lines = ["🌅 *בוקר טוב! הנה הסיכום שלך להיום:*\n"]
-        lines.append("📅 *יומן:*")
+        # Overdue reminders from yesterday
+        yesterday_start = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        yesterday_end = yesterday_start + timedelta(days=1)
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(Reminder)
+                .where(Reminder.sent.is_(True))
+                .where(Reminder.remind_at >= yesterday_start)
+                .where(Reminder.remind_at < yesterday_end)
+            )
+            overdue = result.scalars().all()
+
+        # Load today-relevant memories
+        from services.memory_service import load_context_for_message
+        today_str = datetime.now(pytz.timezone(settings.timezone)).strftime("%Y-%m-%d")
+        mem_context = await load_context_for_message(today_str)
+
+        lines = [f"בוקר טוב! הנה הסיכום שלך להיום:\n"]
+
+        lines.append("יומן:")
         if events:
             for ev in events:
-                lines.append(f"- {ev['time']} — {ev['title']}")
+                lines.append(f"{ev['time']} — {ev['title']}")
         else:
-            lines.append("- אין אירועים להיום")
+            lines.append("אין אירועים להיום")
 
-        lines.append("")
-        important = emails[:5]
-        if important:
-            lines.append(f"📧 *מיילים שדורשים תשובה ({len(important)}):*")
-            for em in important:
-                lines.append(f"- מ: {em['from']} — \"{em['subject']}\"")
-        else:
-            lines.append("📧 *מיילים:* אין מיילים דחופים")
+        if overdue:
+            lines.append(f"\nמאתמול — עדיין פתוח:")
+            for rem in overdue:
+                lines.append(f"• {rem.text}")
 
-        lines.append("\nיום טוב! 😊")
-        await whatsapp_service.send_message("\n".join(lines))
+        if emails[:3]:
+            lines.append(f"\nמיילים שדורשים תשובה ({len(emails)}):")
+            for em in emails[:3]:
+                lines.append(f"• {em['from']} — {em['subject']}")
+
+        if mem_context:
+            lines.append(f"\nתזכורת לעצמי: {mem_context[:200]}")
+
+        lines.append("\nיום טוב!")
+        full_text = "\n".join(lines)
+
+        # Send as voice note
+        sent = await whatsapp_service.send_voice_message(full_text, context_type="morning_briefing")
+        if not sent:
+            await whatsapp_service.send_message(f"🌅 *בוקר טוב!*\n\n{full_text}")
         logger.info("[SCHEDULER] Morning summary sent.")
     except Exception as e:
         logger.error(f"[SCHEDULER] Morning summary failed: {e}")
@@ -53,7 +83,6 @@ async def _morning_summary() -> None:
 async def _weekly_summary() -> None:
     try:
         one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-
         async with AsyncSessionLocal() as session:
             claude_calls = await session.scalar(
                 select(func.count(ActionLog.id))
@@ -67,20 +96,13 @@ async def _weekly_summary() -> None:
             ) or 0
 
         pending_emails = await gmail_service.get_emails_awaiting_reply(hours_threshold=0)
-
         lines = [
             "📊 *סיכום השבוע:*\n",
-            "✅ *מה הושלם:*",
             f"- {claude_calls} אינטראקציות עם הסוכן",
             f"- {rules_applied} מיילים טופלו אוטומטית",
-            "",
-            "⏳ *עדיין פתוח:*",
         ]
         if pending_emails:
             lines.append(f"- {len(pending_emails)} מיילים ממתינים לתשובה")
-        else:
-            lines.append("- אין מיילים פתוחים")
-
         lines.append("\nשבת שלום! 🕍")
         await whatsapp_service.send_message("\n".join(lines))
         logger.info("[SCHEDULER] Weekly summary sent.")
@@ -95,12 +117,25 @@ async def _check_email_reminders() -> None:
         )
         for em in emails:
             msg = (
-                f"📬 *תזכורת:* יש לך מייל מ-{em['from']} שממתין לתשובה\n"
+                f"📬 *תזכורת:* מייל מ-{em['from']} ממתין לתשובה\n"
                 f"נושא: \"{em['subject']}\""
             )
             await whatsapp_service.send_message(msg)
     except Exception as e:
         logger.error(f"[SCHEDULER] Email reminder check failed: {e}")
+
+
+async def _check_proactive_alerts() -> None:
+    """Every 30 min: notify about urgent new emails."""
+    try:
+        urgent = await gmail_service.get_recent_urgent_emails(minutes=35)
+        for em in urgent:
+            msg = f"🚨 *מייל דחוף:*\n*מ:* {em['from']}\n*נושא:* {em['subject']}"
+            await whatsapp_service.send_message(msg)
+        if urgent:
+            logger.info(f"[ALERTS] Sent {len(urgent)} urgent email alerts")
+    except Exception as e:
+        logger.error(f"[ALERTS] Proactive check failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +147,11 @@ def setup_scheduler() -> None:
 
     scheduler.add_job(
         _morning_summary,
-        CronTrigger(hour=settings.morning_summary_hour, minute=0, timezone=tz),
+        CronTrigger(
+            hour=settings.morning_summary_hour,
+            minute=settings.morning_summary_minute,
+            timezone=tz,
+        ),
         id="morning_summary",
     )
     scheduler.add_job(
@@ -137,8 +176,13 @@ def setup_scheduler() -> None:
     )
     scheduler.add_job(
         check_and_send_reminders,
-        CronTrigger(minute="*", timezone=tz),   # every minute
+        CronTrigger(minute="*", timezone=tz),
         id="reminders",
+    )
+    scheduler.add_job(
+        _check_proactive_alerts,
+        CronTrigger(minute="*/30", timezone=tz),
+        id="proactive_alerts",
     )
     scheduler.start()
     logger.info("[SCHEDULER] All jobs scheduled.")

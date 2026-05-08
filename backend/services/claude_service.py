@@ -142,6 +142,32 @@ _TOOLS_DM: List[Dict] = [
             "required": ["query"],
         },
     },
+    {
+        "name": "remember",
+        "description": "שמור עובדה חשובה לזיכרון לטווח ארוך. קטגוריות: people, projects, preferences, episodic",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "העובדה לשמירה"},
+                "category": {
+                    "type": "string",
+                    "enum": ["people", "projects", "preferences", "episodic"],
+                },
+            },
+            "required": ["content", "category"],
+        },
+    },
+    {
+        "name": "recall",
+        "description": "חפש בזיכרון לטווח ארוך לפי מילות מפתח",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "מה לחפש בזיכרון"},
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 # Group chats — no personal data tools
@@ -149,7 +175,7 @@ _TOOLS_GROUP: List[Dict] = [
     t for t in _TOOLS_DM
     if t["name"] in {
         "get_todays_events", "get_tomorrows_events", "get_weeks_events",
-        "web_search",
+        "web_search", "recall",
     }
 ]
 
@@ -170,14 +196,17 @@ _SYSTEM_DM = """\
 • קביעת תזכורות ("תזכיר לי ביום שישי ב-17:00 לקנות מתנה")
 • חיפוש מידע באינטרנט
 • יצירת חוקי אוטומציה למיילים
+• זיכרון לטווח ארוך (remember / recall)
 
 כללים:
 1. פעולות שמשנות נתונים (שליחת מייל, יצירת אירוע) דורשות אישור מפורש.
-2. ענה תמיד בעברית, בצורה תמציתית וברורה.
-3. לתזכורות — המר "מחר", "ביום שישי", "בעוד שעה" לתאריך ISO מדויק לפי השעה הנוכחית.
+2. לפני ביצוע פעולה — בדוק: "האם הבנתי נכון?" אם יש ספק — שאל שאלת הבהרה קצרה.
+3. ענה תמיד בעברית, בצורה תמציתית וברורה.
+4. לתזכורות — המר "מחר", "ביום שישי", "בעוד שעה" לתאריך ISO מדויק.
+5. כשהמשתמש מזכיר שמות, פרויקטים, העדפות או אירועים — קרא ל-remember() לשמירה.
 
 תאריך ושעה נוכחיים (ישראל): {current_datetime}
-"""
+{memory_context}"""
 
 _SYSTEM_GROUP = """\
 אתה עוזר AI בשם {bot_name} שפועל בקבוצת WhatsApp.
@@ -194,6 +223,8 @@ _SYSTEM_GROUP = """\
 
 תאריך ושעה נוכחיים (ישראל): {current_datetime}
 """
+
+
 
 # ---------------------------------------------------------------------------
 # DB helpers
@@ -340,6 +371,20 @@ async def _execute_tool(name: str, inp: Dict, is_group: bool = False) -> Tuple[s
             from services.search_service import web_search
             return await web_search(inp["query"], inp.get("max_results", 5)), False
 
+        if name == "remember":
+            from services.memory_service import remember
+            return await remember(inp["content"], inp.get("category", "episodic")), False
+
+        if name == "recall":
+            from services.memory_service import recall
+            memories = await recall(inp["query"])
+            if not memories:
+                return "לא נמצאו זיכרונות רלוונטיים.", False
+            lines = [f"📌 זיכרונות רלוונטיים ({len(memories)}):"]
+            for m in memories:
+                lines.append(f"[{m['category']}] {m['content']}")
+            return "\n".join(lines), False
+
         if name == "set_reminder":
             remind_at = datetime.fromisoformat(inp["remind_at"])
             async with AsyncSessionLocal() as session:
@@ -455,7 +500,14 @@ async def process_message(
         system = _SYSTEM_GROUP.format(bot_name=settings.bot_name, current_datetime=current_dt)
         tools = _TOOLS_GROUP
     else:
-        system = _SYSTEM_DM.format(bot_name=settings.bot_name, current_datetime=current_dt)
+        # Load relevant long-term memories for context
+        from services.memory_service import load_context_for_message
+        memory_context = await load_context_for_message(user_message)
+        system = _SYSTEM_DM.format(
+            bot_name=settings.bot_name,
+            current_datetime=current_dt,
+            memory_context=memory_context,
+        )
         tools = _TOOLS_DM
 
     try:

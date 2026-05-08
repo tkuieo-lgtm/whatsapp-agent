@@ -25,28 +25,50 @@ NEWSLETTER_KEYWORDS = ["unsubscribe", "newsletter", "mailing list", "opt-out"]
 # ---------------------------------------------------------------------------
 
 async def get_credentials() -> Optional[Credentials]:
-    """Load Google credentials from DB, refreshing the token if expired."""
+    """Load Google credentials from DB. Auto-refreshes if expired or invalid."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(Setting).where(Setting.key == "google_tokens")
         )
         setting = result.scalar_one_or_none()
         if not setting:
+            logger.error("[GMAIL] No google_tokens in DB — visit /auth/google")
             return None
-
         td = setting.value
-        creds = Credentials(
-            token=td.get("access_token"),
-            refresh_token=td.get("refresh_token"),
-            token_uri=td.get("token_uri", "https://oauth2.googleapis.com/token"),
-            client_id=td.get("client_id"),
-            client_secret=td.get("client_secret"),
-            scopes=td.get("scopes", []),
-        )
 
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        await _save_credentials(creds, td.get("client_id"), td.get("client_secret"))
+    # Restore expiry so creds.expired works correctly
+    expiry = None
+    if td.get("expiry"):
+        try:
+            expiry = datetime.fromisoformat(td["expiry"])
+        except Exception:
+            pass
+
+    creds = Credentials(
+        token=td.get("access_token"),
+        refresh_token=td.get("refresh_token"),
+        token_uri=td.get("token_uri", "https://oauth2.googleapis.com/token"),
+        client_id=td.get("client_id"),
+        client_secret=td.get("client_secret"),
+        scopes=td.get("scopes", []),
+        expiry=expiry,
+    )
+
+    logger.info(
+        f"[GMAIL] Creds loaded — valid={creds.valid} expired={creds.expired} "
+        f"has_refresh={bool(creds.refresh_token)} scopes={creds.scopes}"
+    )
+
+    # Refresh if expired OR if the token appears invalid (expiry was never stored)
+    if (creds.expired or not creds.valid) and creds.refresh_token:
+        logger.info("[GMAIL] Refreshing token…")
+        try:
+            creds.refresh(Request())
+            await _save_credentials(creds, td.get("client_id"), td.get("client_secret"))
+            logger.info("[GMAIL] Token refreshed successfully")
+        except Exception as e:
+            logger.error(f"[GMAIL] Token refresh failed: {type(e).__name__}: {e}")
+            return None
 
     return creds
 
@@ -59,6 +81,7 @@ async def _save_credentials(creds: Credentials, client_id: str, client_secret: s
         "client_id": client_id,
         "client_secret": client_secret,
         "scopes": list(creds.scopes) if creds.scopes else [],
+        "expiry": creds.expiry.isoformat() if creds.expiry else None,
     }
     async with AsyncSessionLocal() as session:
         stmt = (
@@ -74,7 +97,6 @@ async def _save_credentials(creds: Credentials, client_id: str, client_secret: s
 
 
 async def save_credentials(creds: Credentials, client_id: str, client_secret: str) -> None:
-    """Public helper called by the auth router after first OAuth flow."""
     await _save_credentials(creds, client_id, client_secret)
 
 
@@ -95,7 +117,6 @@ def _get_body(message: Dict) -> str:
                 if text:
                     return text
         return ""
-
     return _extract(message.get("payload", {}))
 
 
@@ -105,15 +126,17 @@ def _is_newsletter(message: Dict) -> bool:
         for h in message.get("payload", {}).get("headers", [])
     }
     from_addr = headers.get("from", "").lower()
-
     for pattern in NEWSLETTER_PATTERNS:
         if re.search(pattern, from_addr):
             return True
     if "list-unsubscribe" in headers:
         return True
-
     body = _get_body(message).lower()
     return any(kw in body for kw in NEWSLETTER_KEYWORDS)
+
+
+def _build_service(creds: Credentials):
+    return build("gmail", "v1", credentials=creds)
 
 
 # ---------------------------------------------------------------------------
@@ -121,12 +144,12 @@ def _is_newsletter(message: Dict) -> bool:
 # ---------------------------------------------------------------------------
 
 async def get_unread_emails(max_results: int = 10, smart_filter: bool = True) -> List[Dict]:
+    logger.info("[GMAIL] Fetching unread emails…")
     creds = await get_credentials()
     if not creds:
         raise ValueError("Google credentials not configured. Visit /auth/google first.")
-
     try:
-        service = build("gmail", "v1", credentials=creds)
+        service = _build_service(creds)
         result = service.users().messages().list(
             userId="me", q="is:unread in:inbox", maxResults=max_results * 3
         ).execute()
@@ -152,19 +175,20 @@ async def get_unread_emails(max_results: int = 10, smart_filter: bool = True) ->
                 "snippet": full.get("snippet", ""),
                 "body": _get_body(full)[:500],
             })
+        logger.info(f"[GMAIL] Returned {len(emails)} unread emails")
         return emails
     except HttpError as e:
-        logger.error(f"[GMAIL] API error reading emails: {e}")
+        logger.error(f"[GMAIL] Error: {type(e).__name__}: {e}")
         raise
 
 
 async def send_email(to: str, subject: str, body: str, cc: Optional[str] = None) -> None:
+    logger.info(f"[GMAIL] Sending email to {to}…")
     creds = await get_credentials()
     if not creds:
         raise ValueError("Google credentials not configured.")
-
     try:
-        service = build("gmail", "v1", credentials=creds)
+        service = _build_service(creds)
         msg = email_lib.message.EmailMessage()
         msg["To"] = to
         msg["Subject"] = subject
@@ -173,8 +197,9 @@ async def send_email(to: str, subject: str, body: str, cc: Optional[str] = None)
         msg.set_content(body)
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         service.users().messages().send(userId="me", body={"raw": raw}).execute()
+        logger.info("[GMAIL] Email sent")
     except HttpError as e:
-        logger.error(f"[GMAIL] API error sending email: {e}")
+        logger.error(f"[GMAIL] Send error: {type(e).__name__}: {e}")
         raise
 
 
@@ -182,23 +207,18 @@ async def move_to_folder(message_id: str, folder: str) -> None:
     creds = await get_credentials()
     if not creds:
         raise ValueError("Google credentials not configured.")
-
     try:
-        service = build("gmail", "v1", credentials=creds)
+        service = _build_service(creds)
         labels = service.users().labels().list(userId="me").execute().get("labels", [])
-        label_id = next(
-            (l["id"] for l in labels if l["name"].lower() == folder.lower()), None
-        )
+        label_id = next((l["id"] for l in labels if l["name"].lower() == folder.lower()), None)
         if not label_id:
-            created = service.users().labels().create(
-                userId="me", body={"name": folder}
-            ).execute()
+            created = service.users().labels().create(userId="me", body={"name": folder}).execute()
             label_id = created["id"]
         service.users().messages().modify(
             userId="me", id=message_id, body={"addLabelIds": [label_id]}
         ).execute()
     except HttpError as e:
-        logger.error(f"[GMAIL] API error moving email: {e}")
+        logger.error(f"[GMAIL] Move error: {type(e).__name__}: {e}")
         raise
 
 
@@ -206,30 +226,26 @@ async def mark_as_read(message_id: str) -> None:
     creds = await get_credentials()
     if not creds:
         raise ValueError("Google credentials not configured.")
-
     try:
-        service = build("gmail", "v1", credentials=creds)
+        service = _build_service(creds)
         service.users().messages().modify(
             userId="me", id=message_id, body={"removeLabelIds": ["UNREAD"]}
         ).execute()
     except HttpError as e:
-        logger.error(f"[GMAIL] API error marking as read: {e}")
+        logger.error(f"[GMAIL] Mark-read error: {type(e).__name__}: {e}")
         raise
 
 
 async def search_emails(query: str, since_days: int = 7, max_results: int = 10) -> List[Dict]:
-    """Search emails by keyword/sender within the last `since_days` days."""
+    logger.info(f"[GMAIL] Searching emails: {query!r} (last {since_days}d)")
     creds = await get_credentials()
     if not creds:
         raise ValueError("Google credentials not configured.")
-
     try:
-        service = build("gmail", "v1", credentials=creds)
-        full_query = f"{query} newer_than:{since_days}d"
+        service = _build_service(creds)
         result = service.users().messages().list(
-            userId="me", q=full_query, maxResults=max_results
+            userId="me", q=f"{query} newer_than:{since_days}d", maxResults=max_results
         ).execute()
-
         emails: List[Dict] = []
         for msg in result.get("messages", []):
             full = service.users().messages().get(
@@ -247,9 +263,10 @@ async def search_emails(query: str, since_days: int = 7, max_results: int = 10) 
                 "snippet": full.get("snippet", ""),
                 "body": _get_body(full)[:800],
             })
+        logger.info(f"[GMAIL] Search returned {len(emails)} emails")
         return emails
     except HttpError as e:
-        logger.error(f"[GMAIL] API error searching emails: {e}")
+        logger.error(f"[GMAIL] Search error: {type(e).__name__}: {e}")
         raise
 
 
@@ -257,20 +274,14 @@ async def get_emails_awaiting_reply(hours_threshold: int = 6) -> List[Dict]:
     creds = await get_credentials()
     if not creds:
         return []
-
     try:
-        service = build("gmail", "v1", credentials=creds)
+        service = _build_service(creds)
         query = f"is:unread in:inbox older_than:{hours_threshold}h" if hours_threshold > 0 else "is:unread in:inbox"
-        result = service.users().messages().list(
-            userId="me", q=query, maxResults=5
-        ).execute()
-
+        result = service.users().messages().list(userId="me", q=query, maxResults=5).execute()
         emails: List[Dict] = []
         for msg in result.get("messages", []):
             full = service.users().messages().get(
-                userId="me",
-                messageId=msg["id"],
-                format="metadata",
+                userId="me", messageId=msg["id"], format="metadata",
                 metadataHeaders=["From", "Subject", "Date"],
             ).execute()
             if _is_newsletter(full):
@@ -287,5 +298,35 @@ async def get_emails_awaiting_reply(hours_threshold: int = 6) -> List[Dict]:
             })
         return emails
     except Exception as e:
-        logger.error(f"[GMAIL] Error fetching emails awaiting reply: {e}")
+        logger.error(f"[GMAIL] Awaiting-reply error: {type(e).__name__}: {e}")
+        return []
+
+
+async def get_recent_urgent_emails(minutes: int = 35) -> List[Dict]:
+    """Return unread emails from the last N minutes with urgent subjects."""
+    creds = await get_credentials()
+    if not creds:
+        return []
+    urgent_keywords = ["דחוף", "urgent", "asap", "חשוב", "מיידי", "emergency", "immediately"]
+    try:
+        service = _build_service(creds)
+        result = service.users().messages().list(
+            userId="me", q=f"is:unread newer_than:{minutes}m in:inbox", maxResults=10
+        ).execute()
+        emails: List[Dict] = []
+        for msg in result.get("messages", []):
+            full = service.users().messages().get(
+                userId="me", messageId=msg["id"], format="metadata",
+                metadataHeaders=["From", "Subject"],
+            ).execute()
+            hdrs = {
+                h["name"].lower(): h["value"]
+                for h in full.get("payload", {}).get("headers", [])
+            }
+            subject = hdrs.get("subject", "")
+            if any(kw.lower() in subject.lower() for kw in urgent_keywords):
+                emails.append({"from": hdrs.get("from", ""), "subject": subject})
+        return emails
+    except Exception as e:
+        logger.error(f"[GMAIL] Urgent email check error: {type(e).__name__}: {e}")
         return []

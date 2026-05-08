@@ -6,22 +6,40 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from config import settings
-from database import ActionLog, AsyncSessionLocal, GroupInteraction, PendingAction
+from database import ActionLog, AsyncSessionLocal, GroupInteraction, PendingAction, VoicePreference
 from models.schemas import IncomingMessage
 from services import whatsapp_service
 from services.claude_service import execute_approved_action, process_message
+from services.tts_service import should_use_voice
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _YES = {"כן", "yes", "y", "אישור", "ok", "אוקיי"}
 _NO = {"לא", "no", "n", "ביטול", "cancel"}
+_VOICE_POSITIVE = {"יופי", "מושלם", "נהדר", "אהבתי", "קול", "תמשיך"}
+_VOICE_NEGATIVE = {"תכתוב", "טקסט", "בטקסט", "מעצבן", "עצור", "הפסק"}
+
+
+async def _log_voice_preference(context_type: str, used_voice: bool, feedback: str = "") -> None:
+    try:
+        async with AsyncSessionLocal() as session:
+            session.add(VoicePreference(
+                context_type=context_type,
+                used_voice=used_voice,
+                user_feedback=feedback or None,
+            ))
+            await session.commit()
+    except Exception as e:
+        logger.error(f"[VOICE-PREF] Failed to log: {e}")
 
 
 async def _handle_message(msg: IncomingMessage) -> None:
+    was_voice_input = msg.message_type == "audio"
+
     # --- Voice note: transcribe first ---
     text = msg.message.strip()
-    if msg.message_type == "audio" and msg.media_data:
+    if was_voice_input and msg.media_data:
         try:
             from services.voice_service import transcribe_voice
             text = await transcribe_voice(msg.media_data, msg.media_mime or "audio/ogg")
@@ -32,11 +50,21 @@ async def _handle_message(msg: IncomingMessage) -> None:
             await whatsapp_service.send_message("❌ לא הצלחתי לתמלל את ההודעה הקולית.")
             return
 
-    # Determine where to send the reply
     reply_chat_id = msg.group_id if msg.is_group else None
+    lower = text.lower()
 
-    # --- Approval flow (DM only — groups don't have pending actions) ---
-    if not msg.is_group and text.lower() in (_YES | _NO):
+    # --- Voice feedback detection ---
+    if not msg.is_group:
+        feedback = ""
+        if any(kw in lower for kw in _VOICE_POSITIVE):
+            feedback = "positive"
+        elif any(kw in lower for kw in _VOICE_NEGATIVE):
+            feedback = "negative"
+        if feedback:
+            await _log_voice_preference("feedback", used_voice=feedback == "positive", feedback=feedback)
+
+    # --- Approval flow (DM only) ---
+    if not msg.is_group and lower in (_YES | _NO):
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(PendingAction)
@@ -53,7 +81,7 @@ async def _handle_message(msg: IncomingMessage) -> None:
                     await whatsapp_service.send_message("⏰ הפעולה פגה. אנא בקש שוב.")
                     return
 
-                if text.lower() in _YES:
+                if lower in _YES:
                     pending.status = "approved"
                     action_type, payload = pending.type, pending.payload
                     await session.commit()
@@ -76,9 +104,17 @@ async def _handle_message(msg: IncomingMessage) -> None:
             is_group=msg.is_group,
             group_sender=msg.group_sender,
         )
-        await whatsapp_service.send_message(response_text, chat_id=reply_chat_id)
 
-        # Log group interactions separately
+        # Decide voice vs text
+        use_voice = should_use_voice(response_text, was_voice_input=was_voice_input)
+        await _log_voice_preference("message", used_voice=use_voice)
+
+        if use_voice and not msg.is_group:
+            await whatsapp_service.send_voice_message(response_text, chat_id=reply_chat_id)
+        else:
+            await whatsapp_service.send_message(response_text, chat_id=reply_chat_id)
+
+        # Log group interactions
         if msg.is_group:
             async with AsyncSessionLocal() as session:
                 session.add(GroupInteraction(
@@ -96,8 +132,6 @@ async def _handle_message(msg: IncomingMessage) -> None:
 
 @router.post("/webhook/message")
 async def receive_message(msg: IncomingMessage, background_tasks: BackgroundTasks):
-    """Endpoint called by the WhatsApp bridge."""
-    # Security: only accept messages from the owner's number
     if msg.sender.replace("+", "") != settings.owner_phone:
         logger.warning(f"[SECURITY] Ignored message from: {msg.sender}")
         return JSONResponse(status_code=200, content={"ok": True})
