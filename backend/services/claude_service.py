@@ -1,0 +1,412 @@
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Tuple
+
+import anthropic
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from config import settings
+from database import (
+    ActionLog,
+    AsyncSessionLocal,
+    ConversationHistory,
+    EmailRule,
+    PendingAction,
+    Setting,
+)
+from services import calendar_service, gmail_service
+
+logger = logging.getLogger(__name__)
+
+_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+
+# ---------------------------------------------------------------------------
+# Tool definitions
+# ---------------------------------------------------------------------------
+
+TOOLS = [
+    {
+        "name": "get_unread_emails",
+        "description": "קבל רשימה של מיילים לא נקראים עם סינון חכם (ללא ניוזלטרים)",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "max_results": {"type": "integer", "default": 10},
+                "smart_filter": {"type": "boolean", "default": True},
+            },
+        },
+    },
+    {
+        "name": "send_email",
+        "description": "שלח מייל — דורש אישור המשתמש לפני ביצוע",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string"},
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
+                "cc": {"type": "string"},
+            },
+            "required": ["to", "subject", "body"],
+        },
+    },
+    {
+        "name": "get_todays_events",
+        "description": "קבל את כל האירועים ביומן להיום",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_weeks_events",
+        "description": "קבל את כל האירועים ביומן לשבוע הקרוב",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "create_calendar_event",
+        "description": "צור אירוע חדש ביומן — דורש אישור המשתמש",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "date": {"type": "string", "description": "YYYY-MM-DD"},
+                "start_time": {"type": "string", "description": "HH:MM"},
+                "end_time": {"type": "string", "description": "HH:MM"},
+                "description": {"type": "string"},
+                "location": {"type": "string"},
+            },
+            "required": ["title", "date", "start_time", "end_time"],
+        },
+    },
+    {
+        "name": "delete_calendar_event",
+        "description": "מחק אירוע מהיומן — דורש אישור המשתמש",
+        "input_schema": {
+            "type": "object",
+            "properties": {"event_id": {"type": "string"}},
+            "required": ["event_id"],
+        },
+    },
+    {
+        "name": "create_email_rule",
+        "description": "צור חוק אוטומטי לטיפול במיילים — דורש אישור המשתמש",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "from_contains": {"type": "string"},
+                "subject_contains": {"type": "string"},
+                "move_to_folder": {"type": "string"},
+                "mark_as_read": {"type": "boolean"},
+            },
+            "required": ["name"],
+        },
+    },
+]
+
+_WRITE_TOOLS = {"send_email", "create_calendar_event", "delete_calendar_event", "create_email_rule"}
+
+SYSTEM_PROMPT = """\
+אתה עוזר AI אישי חכם שפועל דרך WhatsApp. אתה מחובר ל-Gmail וליומן Google Calendar של המשתמש.
+
+יכולות:
+• קריאת מיילים לא נקראים וסיכומם
+• שליחת מיילים (עם אישור)
+• צפייה באירועי יומן
+• יצירה / מחיקה של אירועים (עם אישור)
+• יצירת חוקים לניהול מיילים אוטומטי (עם אישור)
+
+כללים:
+1. פעולות שמשנות נתונים תמיד דורשות אישור מפורש.
+2. ענה תמיד בעברית, בצורה תמציתית וברורה.
+3. כשמציע פעולה — תאר אותה ושאל לאישור.
+
+תאריך ושעה נוכחיים: {current_datetime}
+"""
+
+# ---------------------------------------------------------------------------
+# DB helpers
+# ---------------------------------------------------------------------------
+
+async def _save_history(role: str, content: str) -> None:
+    try:
+        async with AsyncSessionLocal() as session:
+            session.add(ConversationHistory(role=role, content=content))
+            await session.commit()
+    except Exception as e:
+        logger.error(f"[CLAUDE] Failed to save history: {e}")
+
+
+async def _get_history(limit: int = 10) -> List[Dict]:
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(ConversationHistory)
+                .order_by(ConversationHistory.created_at.desc())
+                .limit(limit)
+            )
+            rows = result.scalars().all()
+            return [{"role": r.role, "content": r.content} for r in reversed(rows)]
+    except Exception as e:
+        logger.error(f"[CLAUDE] Failed to load history: {e}")
+        return []
+
+
+async def _create_pending_action(action_type: str, payload: Dict) -> str:
+    async with AsyncSessionLocal() as session:
+        action = PendingAction(type=action_type, payload=payload)
+        session.add(action)
+        await session.commit()
+        await session.refresh(action)
+        return str(action.id)
+
+
+async def _log_action(action_type: str, details: Dict, status: str) -> None:
+    try:
+        async with AsyncSessionLocal() as session:
+            session.add(ActionLog(action_type=action_type, details=details, status=status))
+            await session.commit()
+    except Exception as e:
+        logger.error(f"[CLAUDE] Failed to log action: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting
+# ---------------------------------------------------------------------------
+
+async def _check_rate_limit() -> bool:
+    try:
+        one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(func.count(ActionLog.id))
+                .where(ActionLog.action_type == "claude_call")
+                .where(ActionLog.created_at >= one_hour_ago)
+            )
+            count = result.scalar() or 0
+        return count < settings.claude_rate_limit_per_hour
+    except Exception:
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Auto-mode check
+# ---------------------------------------------------------------------------
+
+async def _is_auto_mode(action_type: str) -> bool:
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(Setting).where(Setting.key == f"auto_mode_{action_type}")
+            )
+            setting = result.scalar_one_or_none()
+            if setting:
+                return bool(setting.value)
+    except Exception:
+        pass
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Tool execution
+# ---------------------------------------------------------------------------
+
+async def _execute_tool(name: str, inp: Dict) -> Tuple[str, bool]:
+    """Execute a tool. Returns (message, needs_approval)."""
+    try:
+        # --- Read tools ---
+        if name == "get_unread_emails":
+            emails = await gmail_service.get_unread_emails(
+                max_results=inp.get("max_results", 10),
+                smart_filter=inp.get("smart_filter", True),
+            )
+            if not emails:
+                return "אין מיילים לא נקראים שדורשים תשובה.", False
+            lines = [f"נמצאו {len(emails)} מיילים לא נקראים:\n"]
+            for i, em in enumerate(emails, 1):
+                lines.append(
+                    f"{i}. מ: {em['from']}\n"
+                    f"   נושא: {em['subject']}\n"
+                    f"   תאריך: {em['date']}\n"
+                    f"   תקציר: {em['snippet'][:120]}…\n"
+                )
+            return "\n".join(lines), False
+
+        if name == "get_todays_events":
+            events = await calendar_service.get_todays_events()
+            if not events:
+                return "אין אירועים ביומן להיום.", False
+            lines = ["📅 אירועים להיום:"]
+            for ev in events:
+                loc = f" ({ev['location']})" if ev.get("location") else ""
+                lines.append(f"• {ev['time']} — {ev['title']}{loc}")
+            return "\n".join(lines), False
+
+        if name == "get_weeks_events":
+            events = await calendar_service.get_weeks_events()
+            if not events:
+                return "אין אירועים ביומן השבוע.", False
+            lines = ["📅 אירועים השבוע:"]
+            for ev in events:
+                lines.append(f"• {ev['time']} — {ev['title']}")
+            return "\n".join(lines), False
+
+        # --- Write tools ---
+        if name in _WRITE_TOOLS:
+            if await _is_auto_mode(name):
+                result = await execute_approved_action(name, inp)
+                return result, False
+
+            if name == "send_email":
+                msg = f"📧 *שליחת מייל*\n\n*ל:* {inp['to']}\n"
+                if inp.get("cc"):
+                    msg += f"*CC:* {inp['cc']}\n"
+                msg += f"*נושא:* {inp['subject']}\n\n*תוכן:*\n{inp['body']}\n\n"
+
+            elif name == "create_calendar_event":
+                msg = (
+                    f"📅 *יצירת אירוע ביומן*\n\n"
+                    f"*כותרת:* {inp['title']}\n"
+                    f"*תאריך:* {inp['date']}\n"
+                    f"*שעות:* {inp['start_time']} — {inp['end_time']}\n"
+                )
+                if inp.get("location"):
+                    msg += f"*מיקום:* {inp['location']}\n"
+                if inp.get("description"):
+                    msg += f"*תיאור:* {inp['description']}\n"
+                msg += "\n"
+
+            elif name == "delete_calendar_event":
+                msg = f"🗑️ *מחיקת אירוע* (ID: {inp['event_id']})\n\n"
+
+            elif name == "create_email_rule":
+                cond = {k: inp[k] for k in ("from_contains", "subject_contains") if inp.get(k)}
+                act = {k: inp[k] for k in ("move_to_folder", "mark_as_read") if inp.get(k) is not None}
+                msg = (
+                    f"📋 *חוק מייל חדש*\n\n"
+                    f"*שם:* {inp['name']}\n"
+                    f"*תנאים:* {json.dumps(cond, ensure_ascii=False)}\n"
+                    f"*פעולות:* {json.dumps(act, ensure_ascii=False)}\n\n"
+                )
+            else:
+                msg = f"פעולה: {name}\nפרמטרים: {json.dumps(inp, ensure_ascii=False)}\n\n"
+
+            msg += "להמשיך? ענה *כן* או *לא*"
+            return msg, True
+
+        return f"כלי לא מוכר: {name}", False
+
+    except Exception as e:
+        logger.error(f"[CLAUDE] Tool error ({name}): {e}")
+        return f"❌ שגיאה בביצוע {name}: {e}", False
+
+
+async def execute_approved_action(action_type: str, payload: Dict) -> str:
+    """Execute a write action after user approval."""
+    try:
+        if action_type == "send_email":
+            await gmail_service.send_email(
+                to=payload["to"],
+                subject=payload["subject"],
+                body=payload["body"],
+                cc=payload.get("cc"),
+            )
+            return f"✅ המייל נשלח בהצלחה ל-{payload['to']}"
+
+        if action_type == "create_calendar_event":
+            await calendar_service.create_event(
+                title=payload["title"],
+                date=payload["date"],
+                start_time=payload["start_time"],
+                end_time=payload["end_time"],
+                description=payload.get("description", ""),
+                location=payload.get("location", ""),
+            )
+            return f"✅ האירוע '{payload['title']}' נוצר בהצלחה"
+
+        if action_type == "delete_calendar_event":
+            await calendar_service.delete_event(payload["event_id"])
+            return "✅ האירוע נמחק בהצלחה"
+
+        if action_type == "create_email_rule":
+            conditions = {k: payload[k] for k in ("from_contains", "subject_contains") if payload.get(k)}
+            actions = {k: payload[k] for k in ("move_to_folder", "mark_as_read") if payload.get(k) is not None}
+            async with AsyncSessionLocal() as session:
+                session.add(EmailRule(name=payload["name"], conditions=conditions, actions=actions))
+                await session.commit()
+            return f"✅ החוק '{payload['name']}' נוצר בהצלחה"
+
+        return f"❌ סוג פעולה לא מוכר: {action_type}"
+    except Exception as e:
+        logger.error(f"[CLAUDE] Error executing approved action ({action_type}): {e}")
+        return f"❌ שגיאה בביצוע הפעולה: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+async def process_message(user_message: str) -> str:
+    """Process an incoming WhatsApp message through the Claude agentic loop."""
+    if not await _check_rate_limit():
+        return "⚠️ הגעתי למגבלת הקריאות לשעה. נסה שוב מאוחר יותר."
+
+    await _log_action("claude_call", {"message": user_message[:100]}, "started")
+    await _save_history("user", user_message)
+
+    history = await _get_history(limit=10)
+    messages = [{"role": h["role"], "content": h["content"]} for h in history]
+
+    if not messages or messages[-1]["role"] != "user":
+        messages.append({"role": "user", "content": user_message})
+
+    system = SYSTEM_PROMPT.format(current_datetime=datetime.now().strftime("%Y-%m-%d %H:%M"))
+
+    try:
+        for _ in range(5):
+            response = _client.messages.create(
+                model=settings.claude_model,
+                max_tokens=2048,
+                system=system,
+                tools=TOOLS,
+                messages=messages,
+            )
+
+            if response.stop_reason == "end_turn":
+                text = "".join(b.text for b in response.content if hasattr(b, "text"))
+                await _save_history("assistant", text)
+                return text
+
+            if response.stop_reason == "tool_use":
+                assistant_content = []
+                for b in response.content:
+                    if b.type == "text":
+                        assistant_content.append({"type": "text", "text": b.text})
+                    elif b.type == "tool_use":
+                        assistant_content.append(
+                            {"type": "tool_use", "id": b.id, "name": b.name, "input": b.input}
+                        )
+                messages.append({"role": "assistant", "content": assistant_content})
+
+                tool_results = []
+                for b in response.content:
+                    if b.type != "tool_use":
+                        continue
+                    result, needs_approval = await _execute_tool(b.name, b.input)
+                    if needs_approval:
+                        await _create_pending_action(b.name, b.input)
+                        await _save_history("assistant", result)
+                        return result
+                    tool_results.append(
+                        {"type": "tool_result", "tool_use_id": b.id, "content": result}
+                    )
+                messages.append({"role": "user", "content": tool_results})
+
+            else:
+                break
+
+    except Exception as e:
+        logger.error(f"[CLAUDE] Error processing message: {e}")
+        return f"❌ שגיאה בעיבוד ההודעה: {e}"
+
+    return "מצטער, לא הצלחתי לעבד את הבקשה. אנא נסה שוב."

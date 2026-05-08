@@ -1,0 +1,143 @@
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import AsyncGenerator
+from uuid import uuid4
+
+from sqlalchemy import Boolean, Column, DateTime, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
+
+from config import settings
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Engine
+# ---------------------------------------------------------------------------
+
+def _async_url(url: str) -> str:
+    """Convert a plain postgresql:// URL to the asyncpg dialect."""
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+asyncpg://" + url[len(prefix):]
+    return url  # already correct or unknown scheme
+
+
+engine = create_async_engine(_async_url(settings.database_url), echo=False, pool_pre_ping=True)
+AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    async with AsyncSessionLocal() as session:
+        yield session
+
+
+# ---------------------------------------------------------------------------
+# ORM models
+# ---------------------------------------------------------------------------
+
+class Base(DeclarativeBase):
+    pass
+
+
+class EmailRule(Base):
+    __tablename__ = "email_rules"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    name = Column(String, nullable=False)
+    conditions = Column(JSONB, nullable=False, default=dict)
+    actions = Column(JSONB, nullable=False, default=dict)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    def to_dict(self):
+        return {
+            "id": str(self.id),
+            "name": self.name,
+            "conditions": self.conditions,
+            "actions": self.actions,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class PendingAction(Base):
+    __tablename__ = "pending_actions"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    type = Column(String, nullable=False)
+    payload = Column(JSONB, nullable=False)
+    status = Column(String, default="pending")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc) + timedelta(minutes=30),
+    )
+
+    def to_dict(self):
+        return {
+            "id": str(self.id),
+            "type": self.type,
+            "payload": self.payload,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+        }
+
+
+class ConversationHistory(Base):
+    __tablename__ = "conversation_history"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    role = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ActionLog(Base):
+    __tablename__ = "action_log"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    action_type = Column(String, nullable=False)
+    details = Column(JSONB)
+    status = Column(String)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    def to_dict(self):
+        return {
+            "id": str(self.id),
+            "action_type": self.action_type,
+            "details": self.details,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(JSONB)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    def to_dict(self):
+        return {"key": self.key, "value": self.value}
+
+
+# ---------------------------------------------------------------------------
+# Startup check — create all tables if they don't exist
+# ---------------------------------------------------------------------------
+
+async def verify_tables() -> bool:
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("[DB] All tables verified / created.")
+        return True
+    except Exception as e:
+        logger.error(f"[DB] Failed to initialise database: {e}")
+        print(f"\n{'='*60}\n❌  Database error: {e}\nCheck DATABASE_URL in .env\n{'='*60}\n")
+        return False
