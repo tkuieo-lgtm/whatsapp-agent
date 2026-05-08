@@ -183,23 +183,13 @@ app.post("/send", async (req, res) => {
   }
 });
 
-// Voice note endpoint — fields: { to, audio, mime }
 app.post("/send-voice", async (req, res) => {
   const { to, audio, mime } = req.body;
-  if (!to || !audio) {
-    return res.status(400).json({ error: "to and audio are required" });
-  }
-  const mimeType = mime || "audio/mpeg";
-  const filename = mimeType.includes("ogg") ? "voice.ogg" : "voice.mp3";
-  try {
-    const media = new MessageMedia(mimeType, audio, filename);
-    await client.sendMessage(to, media, { sendAudioAsVoice: true });
-    console.log(`[VOICE-OUT] Sent voice note to ${to}`);
-    res.json({ success: true });
-  } catch (err) {
-    console.error("[VOICE-OUT] Failed:", err.message);
-    res.status(500).json({ success: false, error: err.message });
-  }
+  console.log(`[VOICE-OUT] /send-voice called, to=${to}, audio_len=${audio?.length}`);
+  const media = new MessageMedia(mime, audio, "voice.mp3");
+  await client.sendMessage(to, media, { sendAudioAsVoice: true });
+  console.log(`[VOICE-OUT] Sent to ${to}`);
+  res.json({ status: "sent" });
 });
 
 app.get("/health", (_req, res) => {

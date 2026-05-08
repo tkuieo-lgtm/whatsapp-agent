@@ -35,6 +35,10 @@ async def _log_voice_preference(context_type: str, used_voice: bool, feedback: s
 
 
 async def _handle_message(msg: IncomingMessage) -> None:
+    logger.info(f"[WEBHOOK] message_type: {msg.message_type}")
+    logger.info(f"[WEBHOOK] has audio: {bool(msg.media_data)}")
+    logger.info(f"[WEBHOOK] message preview: {msg.message[:60]!r}")
+
     was_voice_input = msg.message_type == "audio"
 
     # --- Voice note: transcribe first ---
