@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     google_client_secret: str
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
     tavily_api_key: Optional[str] = None
-    openai_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
     whatsapp_service_url: str = "http://localhost:3000"
     backend_url: str = "http://localhost:8000"
     timezone: str = "Asia/Jerusalem"

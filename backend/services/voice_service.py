@@ -9,14 +9,13 @@ logger = logging.getLogger(__name__)
 
 
 async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str:
-    """Transcribe a base64-encoded voice note using OpenAI Whisper."""
-    if not settings.openai_api_key:
-        raise ValueError("OPENAI_API_KEY is not configured.")
+    """Transcribe a base64-encoded voice note using Groq Whisper (free tier)."""
+    if not settings.groq_api_key:
+        raise ValueError("GROQ_API_KEY is not configured.")
 
-    import openai
-    client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+    from groq import Groq
+    client = Groq(api_key=settings.groq_api_key)
 
-    # Determine extension — Whisper requires an explicit, recognisable extension
     if "ogg" in mime_type:
         suffix = ".ogg"
     elif "mp4" in mime_type or "m4a" in mime_type:
@@ -33,25 +32,24 @@ async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str
 
     tmp_path = None
     try:
-        # Write to a named temp file and CLOSE it before opening again for Whisper
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
         try:
             os.write(tmp_fd, audio_bytes)
         finally:
-            os.close(tmp_fd)  # Ensure file is fully flushed and closed
+            os.close(tmp_fd)
 
         logger.info(f"[VOICE] Temp file path: {tmp_path}")
-        logger.info("[VOICE] Calling Whisper API...")
+        logger.info("[VOICE] Calling Groq Whisper API...")
 
         with open(tmp_path, "rb") as audio_file:
-            transcript = await client.audio.transcriptions.create(
-                model="whisper-1",
+            transcription = client.audio.transcriptions.create(
+                model="whisper-large-v3",
                 file=audio_file,
                 language="he",
             )
 
-        logger.info(f"[VOICE] Transcribed: {transcript.text[:80]}")
-        return transcript.text
+        logger.info(f"[VOICE] Transcribed: {transcription.text[:80]}")
+        return transcription.text
 
     except Exception as e:
         logger.error(f"[VOICE] Error: {type(e).__name__}: {str(e)}")

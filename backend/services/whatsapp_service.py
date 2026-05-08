@@ -28,17 +28,13 @@ async def send_message(message: str, chat_id: Optional[str] = None) -> bool:
 
 
 async def send_voice_message(text: str, chat_id: Optional[str] = None, context_type: str = "text") -> bool:
-    """Generate TTS audio and send as a WhatsApp voice note."""
-    if not settings.openai_api_key:
-        logger.warning("[TTS] OPENAI_API_KEY not set — falling back to text")
-        return await send_message(text, chat_id=chat_id)
-
+    """Generate TTS via gTTS and send as a WhatsApp voice note (mp3)."""
     try:
         from services.tts_service import text_to_speech
         audio_bytes = await text_to_speech(text)
         audio_b64 = base64.b64encode(audio_bytes).decode()
 
-        payload: dict = {"audio_data": audio_b64}
+        payload: dict = {"audio_data": audio_b64, "mime_type": "audio/mpeg"}
         if chat_id:
             payload["chat_id"] = chat_id
         else:
