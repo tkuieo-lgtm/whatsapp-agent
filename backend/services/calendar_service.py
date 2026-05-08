@@ -37,7 +37,8 @@ async def _get_events(days: int) -> List[Dict]:
         service = build("calendar", "v3", credentials=creds)
         tz = _tz()
         now = datetime.now(tz)
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Use tz.localize on a naive midnight datetime to get the correct DST offset
+        start = tz.localize(datetime(now.year, now.month, now.day, 0, 0, 0))
         end = start + timedelta(days=days)
 
         result = service.events().list(

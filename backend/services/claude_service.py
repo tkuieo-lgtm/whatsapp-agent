@@ -360,7 +360,9 @@ async def process_message(user_message: str) -> str:
     if not messages or messages[-1]["role"] != "user":
         messages.append({"role": "user", "content": user_message})
 
-    system = SYSTEM_PROMPT.format(current_datetime=datetime.now().strftime("%Y-%m-%d %H:%M"))
+    import pytz
+    _tz = pytz.timezone(settings.timezone)
+    system = SYSTEM_PROMPT.format(current_datetime=datetime.now(_tz).strftime("%Y-%m-%d %H:%M (%A)"))
 
     try:
         for _ in range(5):
