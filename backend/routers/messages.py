@@ -43,6 +43,9 @@ async def _handle_message(msg: IncomingMessage) -> None:
         try:
             from services.voice_service import transcribe_voice
             text = await transcribe_voice(msg.media_data, msg.media_mime or "audio/ogg")
+            if not text:
+                await whatsapp_service.send_message("לא הצלחתי להבין, נסה שוב 🎤")
+                return
             logger.info(f"[VOICE] Transcribed: {text[:80]}")
             await whatsapp_service.send_message(f"🎤 *תמלול:* {text}")
         except Exception as e:

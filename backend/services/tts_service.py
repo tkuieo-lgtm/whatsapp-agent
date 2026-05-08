@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 
 async def text_to_speech(text: str) -> bytes:
-    """Convert text to speech using gTTS (free, no API key needed). Returns mp3 bytes."""
+    """Convert text to speech using gTTS (free, no API key). Returns mp3 bytes."""
     from gtts import gTTS
 
     logger.info(f"[TTS] Generating speech for {len(text)} chars…")
@@ -14,7 +14,7 @@ async def text_to_speech(text: str) -> bytes:
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
     os.close(tmp_fd)
     try:
-        tts = gTTS(text=text, lang="he")
+        tts = gTTS(text=text, lang="iw")   # iw = Hebrew in gTTS
         tts.save(tmp_path)
         with open(tmp_path, "rb") as f:
             audio_bytes = f.read()
@@ -30,7 +30,6 @@ def should_use_voice(
     was_voice_input: bool = False,
     context_type: str = "text",
 ) -> bool:
-    """Decide whether to send a voice note or a text message."""
     if was_voice_input:
         return True
     if context_type in ("morning_briefing", "reminder", "alert"):

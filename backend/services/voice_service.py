@@ -29,6 +29,7 @@ async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str
 
     audio_bytes = base64.b64decode(audio_data)
     logger.info(f"[VOICE] Received audio, size: {len(audio_bytes)} bytes, mime: {mime_type}")
+    logger.info(f"[VOICE] GROQ_API_KEY exists: {bool(settings.groq_api_key)}")
 
     tmp_path = None
     try:
@@ -39,7 +40,8 @@ async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str
             os.close(tmp_fd)
 
         logger.info(f"[VOICE] Temp file path: {tmp_path}")
-        logger.info("[VOICE] Calling Groq Whisper API...")
+        logger.info(f"[VOICE] Audio file size: {os.path.getsize(tmp_path)} bytes")
+        logger.info("[VOICE] Calling Groq Whisper...")
 
         with open(tmp_path, "rb") as audio_file:
             transcription = client.audio.transcriptions.create(
@@ -48,8 +50,13 @@ async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str
                 language="he",
             )
 
-        logger.info(f"[VOICE] Transcribed: {transcription.text[:80]}")
-        return transcription.text
+        result_text = transcription.text.strip()
+        logger.info(f"[VOICE] Transcription result: \"{result_text}\"")
+
+        if not result_text:
+            return ""   # Caller handles empty string
+
+        return result_text
 
     except Exception as e:
         logger.error(f"[VOICE] Error: {type(e).__name__}: {str(e)}")
