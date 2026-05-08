@@ -45,8 +45,10 @@ async def get_weeks_events() -> List[Dict]:
 
 async def _get_events(offset_days: int, days: int) -> List[Dict]:
     """
-    Fetch events starting from (today + offset_days) midnight for `days` days.
+    Fetch events from ALL user calendars for the requested date window.
     All datetimes are anchored to Asia/Jerusalem (settings.timezone).
+    Both timed (start.dateTime) and all-day/multi-day (start.date) events
+    are returned.
     """
     creds = await get_credentials()
     if not creds:
@@ -64,37 +66,69 @@ async def _get_events(offset_days: int, days: int) -> List[Dict]:
             f"timeMin={time_min.isoformat()} | timeMax={time_max.isoformat()}"
         )
 
-        result = service.events().list(
-            calendarId="primary",
-            timeMin=time_min.isoformat(),
-            timeMax=time_max.isoformat(),
-            singleEvents=True,
-            orderBy="startTime",
-        ).execute()
+        # Fetch all calendars the user has access to
+        cal_list = service.calendarList().list().execute().get("items", [])
+        cal_ids = [c["id"] for c in cal_list]
+        logger.info(
+            f"[CALENDAR] querying {len(cal_ids)} calendars: "
+            f"{[c.get('summary', c['id']) for c in cal_list]}"
+        )
+
+        # Query every calendar and merge results
+        raw_events: List[Dict] = []
+        for cal_id in cal_ids:
+            try:
+                result = service.events().list(
+                    calendarId=cal_id,
+                    timeMin=time_min.isoformat(),
+                    timeMax=time_max.isoformat(),
+                    singleEvents=True,
+                    orderBy="startTime",
+                ).execute()
+                raw_events.extend(result.get("items", []))
+            except HttpError as e:
+                logger.warning(f"[CALENDAR] Skipping calendar {cal_id}: {e}")
+
+        # Sort merged list chronologically
+        def _sort_key(ev: Dict) -> str:
+            s = ev.get("start", {})
+            return s.get("dateTime") or s.get("date") or ""
+
+        raw_events.sort(key=_sort_key)
 
         events: List[Dict] = []
-        for ev in result.get("items", []):
+        seen_ids: set = set()
+        for ev in raw_events:
+            # De-duplicate (same event can appear in multiple calendars)
+            ev_id = ev.get("id", "")
+            if ev_id in seen_ids:
+                continue
+            seen_ids.add(ev_id)
+
             ev_start = ev.get("start", {})
 
             if "dateTime" in ev_start:
+                # Timed event
                 dt = datetime.fromisoformat(ev_start["dateTime"]).astimezone(tz)
                 time_str = dt.strftime("%H:%M")
                 date_str = dt.strftime("%Y-%m-%d")
-            else:
-                # All-day event
+            elif "date" in ev_start:
+                # All-day or multi-day event
                 time_str = "כל היום"
-                date_str = ev_start.get("date", "")
+                date_str = ev_start["date"]  # YYYY-MM-DD as returned by API
+            else:
+                continue  # unknown format, skip
 
             events.append({
-                "id": ev["id"],
-                "date": date_str,       # YYYY-MM-DD in Israel timezone
-                "time": time_str,       # HH:MM in Israel timezone
+                "id": ev_id,
+                "date": date_str,
+                "time": time_str,
                 "title": ev.get("summary", "(ללא כותרת)"),
                 "location": ev.get("location", ""),
                 "description": (ev.get("description") or "")[:200],
             })
 
-        logger.info(f"[CALENDAR] returned {len(events)} events")
+        logger.info(f"[CALENDAR] returned {len(events)} events total")
         return events
 
     except HttpError as e:
