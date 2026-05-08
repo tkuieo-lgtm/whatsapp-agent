@@ -30,6 +30,7 @@ async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str
     audio_bytes = base64.b64decode(audio_data)
     logger.info(f"[VOICE] Received audio, size: {len(audio_bytes)} bytes, mime: {mime_type}")
     logger.info(f"[VOICE] GROQ_API_KEY exists: {bool(settings.groq_api_key)}")
+    logger.info("[VOICE] Starting transcription with Groq...")
 
     tmp_path = None
     try:

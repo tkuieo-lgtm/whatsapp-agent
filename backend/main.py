@@ -33,6 +33,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"[STARTUP] Owner phone: {s.owner_phone}")
     logger.info(f"[STARTUP] Claude model: {s.claude_model}")
     logger.info(f"[STARTUP] Rate limit: {s.claude_rate_limit_per_hour} calls/hour")
+    logger.info(f"[STARTUP] TTS engine: gTTS, STT engine: Groq")
+    logger.info(f"[STARTUP] Groq key configured: {bool(s.groq_api_key)}")
     ok = await verify_tables()
     if not ok:
         logger.warning("[STARTUP] Some Supabase tables are missing — see output above.")

@@ -183,19 +183,18 @@ app.post("/send", async (req, res) => {
   }
 });
 
-// Voice note endpoint — audio_data is base64 encoded audio
+// Voice note endpoint — fields: { to, audio, mime }
 app.post("/send-voice", async (req, res) => {
-  const { phone, chat_id, audio_data, mime_type } = req.body;
-  if (!audio_data) {
-    return res.status(400).json({ error: "audio_data is required" });
+  const { to, audio, mime } = req.body;
+  if (!to || !audio) {
+    return res.status(400).json({ error: "to and audio are required" });
   }
-  const target = chat_id || `${(phone || "").replace(/\D/g, "")}@c.us`;
-  const mimeType = mime_type || "audio/mpeg";
+  const mimeType = mime || "audio/mpeg";
   const filename = mimeType.includes("ogg") ? "voice.ogg" : "voice.mp3";
   try {
-    const media = new MessageMedia(mimeType, audio_data, filename);
-    await client.sendMessage(target, media, { sendAudioAsVoice: true });
-    console.log(`[VOICE-OUT] Sent voice note to ${target}`);
+    const media = new MessageMedia(mimeType, audio, filename);
+    await client.sendMessage(to, media, { sendAudioAsVoice: true });
+    console.log(`[VOICE-OUT] Sent voice note to ${to}`);
     res.json({ success: true });
   } catch (err) {
     console.error("[VOICE-OUT] Failed:", err.message);
