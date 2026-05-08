@@ -7,6 +7,14 @@ class IncomingMessage(BaseModel):
     sender: str
     message: str
     timestamp: Optional[datetime] = None
+    # Group context
+    is_group: bool = False
+    group_id: Optional[str] = None
+    group_sender: Optional[str] = None
+    # Media (voice notes)
+    message_type: str = "text"   # "text" | "audio"
+    media_data: Optional[str] = None   # base64-encoded audio
+    media_mime: Optional[str] = None
 
 
 class EmailRuleCreate(BaseModel):

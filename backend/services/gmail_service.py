@@ -217,6 +217,42 @@ async def mark_as_read(message_id: str) -> None:
         raise
 
 
+async def search_emails(query: str, since_days: int = 7, max_results: int = 10) -> List[Dict]:
+    """Search emails by keyword/sender within the last `since_days` days."""
+    creds = await get_credentials()
+    if not creds:
+        raise ValueError("Google credentials not configured.")
+
+    try:
+        service = build("gmail", "v1", credentials=creds)
+        full_query = f"{query} newer_than:{since_days}d"
+        result = service.users().messages().list(
+            userId="me", q=full_query, maxResults=max_results
+        ).execute()
+
+        emails: List[Dict] = []
+        for msg in result.get("messages", []):
+            full = service.users().messages().get(
+                userId="me", messageId=msg["id"], format="full"
+            ).execute()
+            hdrs = {
+                h["name"].lower(): h["value"]
+                for h in full.get("payload", {}).get("headers", [])
+            }
+            emails.append({
+                "id": msg["id"],
+                "from": hdrs.get("from", "Unknown"),
+                "subject": hdrs.get("subject", "(No subject)"),
+                "date": hdrs.get("date", ""),
+                "snippet": full.get("snippet", ""),
+                "body": _get_body(full)[:800],
+            })
+        return emails
+    except HttpError as e:
+        logger.error(f"[GMAIL] API error searching emails: {e}")
+        raise
+
+
 async def get_emails_awaiting_reply(hours_threshold: int = 6) -> List[Dict]:
     creds = await get_credentials()
     if not creds:

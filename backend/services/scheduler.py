@@ -10,6 +10,7 @@ from config import settings
 from database import ActionLog, AsyncSessionLocal
 from services import calendar_service, gmail_service, whatsapp_service
 from services.rules_engine import run_email_rules
+from services.reminder_service import check_and_send_reminders
 
 logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler(timezone=settings.timezone)
@@ -133,6 +134,11 @@ def setup_scheduler() -> None:
         run_email_rules,
         CronTrigger(minute="*/15", timezone=tz),
         id="email_rules",
+    )
+    scheduler.add_job(
+        check_and_send_reminders,
+        CronTrigger(minute="*", timezone=tz),   # every minute
+        id="reminders",
     )
     scheduler.start()
     logger.info("[SCHEDULER] All jobs scheduled.")

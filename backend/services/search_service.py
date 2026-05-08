@@ -1,0 +1,33 @@
+import logging
+from typing import Optional
+from config import settings
+
+logger = logging.getLogger(__name__)
+
+
+async def web_search(query: str, max_results: int = 5) -> str:
+    """Search the web via Tavily and return formatted results."""
+    if not settings.tavily_api_key:
+        return "❌ חיפוש אינטרנטי אינו מוגדר (חסר TAVILY_API_KEY)."
+
+    try:
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=settings.tavily_api_key)
+        response = client.search(query, max_results=max_results)
+        results = response.get("results", [])
+
+        if not results:
+            return f"לא נמצאו תוצאות עבור: {query}"
+
+        lines = [f"🔍 תוצאות חיפוש עבור \"{query}\":\n"]
+        for i, r in enumerate(results, 1):
+            title = r.get("title", "ללא כותרת")
+            url = r.get("url", "")
+            snippet = r.get("content", "")[:200].strip()
+            lines.append(f"{i}. **{title}**\n   {snippet}\n   {url}\n")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"[SEARCH] Tavily error: {e}")
+        return f"❌ שגיאה בחיפוש: {e}"

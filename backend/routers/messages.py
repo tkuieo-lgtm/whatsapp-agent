@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from config import settings
-from database import ActionLog, AsyncSessionLocal, PendingAction
+from database import ActionLog, AsyncSessionLocal, GroupInteraction, PendingAction
 from models.schemas import IncomingMessage
 from services import whatsapp_service
 from services.claude_service import execute_approved_action, process_message
@@ -19,11 +19,24 @@ _NO = {"לא", "no", "n", "ביטול", "cancel"}
 
 
 async def _handle_message(msg: IncomingMessage) -> None:
+    # --- Voice note: transcribe first ---
     text = msg.message.strip()
-    lower = text.lower()
+    if msg.message_type == "audio" and msg.media_data:
+        try:
+            from services.voice_service import transcribe_voice
+            text = await transcribe_voice(msg.media_data, msg.media_mime or "audio/ogg")
+            logger.info(f"[VOICE] Transcribed: {text[:80]}")
+            await whatsapp_service.send_message(f"🎤 *תמלול:* {text}")
+        except Exception as e:
+            logger.error(f"[VOICE] Transcription failed: {e}")
+            await whatsapp_service.send_message("❌ לא הצלחתי לתמלל את ההודעה הקולית.")
+            return
 
-    # --- Approval flow ---
-    if lower in _YES or lower in _NO:
+    # Determine where to send the reply
+    reply_chat_id = msg.group_id if msg.is_group else None
+
+    # --- Approval flow (DM only — groups don't have pending actions) ---
+    if not msg.is_group and text.lower() in (_YES | _NO):
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(PendingAction)
@@ -40,43 +53,53 @@ async def _handle_message(msg: IncomingMessage) -> None:
                     await whatsapp_service.send_message("⏰ הפעולה פגה. אנא בקש שוב.")
                     return
 
-                if lower in _YES:
+                if text.lower() in _YES:
                     pending.status = "approved"
-                    action_type = pending.type
-                    payload = pending.payload
+                    action_type, payload = pending.type, pending.payload
                     await session.commit()
-
                     response_text = await execute_approved_action(action_type, payload)
-
-                    async with AsyncSessionLocal() as log_session:
-                        log_session.add(ActionLog(
-                            action_type=action_type,
-                            details=payload,
-                            status="approved",
-                        ))
-                        await log_session.commit()
-
-                    await whatsapp_service.send_message(response_text)
+                    async with AsyncSessionLocal() as ls:
+                        ls.add(ActionLog(action_type=action_type, details=payload, status="approved"))
+                        await ls.commit()
                 else:
                     pending.status = "rejected"
                     await session.commit()
-                    await whatsapp_service.send_message("✅ הפעולה בוטלה. איך אוכל לעזור?")
+                    response_text = "✅ הפעולה בוטלה. איך אוכל לעזור?"
+
+                await whatsapp_service.send_message(response_text, chat_id=reply_chat_id)
                 return
 
-    # --- Regular message ---
+    # --- Process via Claude ---
     try:
-        response_text = await process_message(text)
-        await whatsapp_service.send_message(response_text)
+        response_text = await process_message(
+            text,
+            is_group=msg.is_group,
+            group_sender=msg.group_sender,
+        )
+        await whatsapp_service.send_message(response_text, chat_id=reply_chat_id)
+
+        # Log group interactions separately
+        if msg.is_group:
+            async with AsyncSessionLocal() as session:
+                session.add(GroupInteraction(
+                    group_id=msg.group_id or "",
+                    sender=msg.group_sender or msg.sender,
+                    message=text,
+                    response=response_text,
+                ))
+                await session.commit()
+
     except Exception as e:
-        logger.error(f"[MESSAGES] Unhandled error: {e}")
-        await whatsapp_service.send_message("❌ אירעה שגיאה. אנא נסה שוב.")
+        logger.error(f"[MESSAGES] Error: {e}")
+        await whatsapp_service.send_message("❌ אירעה שגיאה. אנא נסה שוב.", chat_id=reply_chat_id)
 
 
 @router.post("/webhook/message")
 async def receive_message(msg: IncomingMessage, background_tasks: BackgroundTasks):
-    """Endpoint called by the WhatsApp bridge when a message arrives."""
+    """Endpoint called by the WhatsApp bridge."""
+    # Security: only accept messages from the owner's number
     if msg.sender.replace("+", "") != settings.owner_phone:
-        logger.warning(f"[SECURITY] Ignored message from unknown sender: {msg.sender}")
+        logger.warning(f"[SECURITY] Ignored message from: {msg.sender}")
         return JSONResponse(status_code=200, content={"ok": True})
 
     background_tasks.add_task(_handle_message, msg)
