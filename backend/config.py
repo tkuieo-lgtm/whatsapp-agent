@@ -1,6 +1,3 @@
-from dotenv import load_dotenv
-load_dotenv(dotenv_path="../.env")
-
 from pydantic_settings import BaseSettings
 
 
