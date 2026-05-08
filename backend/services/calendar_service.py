@@ -12,23 +12,42 @@ from services.gmail_service import get_credentials
 logger = logging.getLogger(__name__)
 
 
-def _tz():
+def _tz() -> pytz.BaseTzInfo:
     return pytz.timezone(settings.timezone)
 
 
+def _today_midnight(tz: pytz.BaseTzInfo, offset_days: int = 0) -> datetime:
+    """Return midnight of today (+ offset_days) in the configured timezone."""
+    now = datetime.now(tz)
+    base = tz.localize(datetime(now.year, now.month, now.day, 0, 0, 0))
+    return base + timedelta(days=offset_days)
+
+
 # ---------------------------------------------------------------------------
-# Read
+# Public read functions
 # ---------------------------------------------------------------------------
 
 async def get_todays_events() -> List[Dict]:
-    return await _get_events(days=1)
+    return await _get_events(offset_days=0, days=1)
+
+
+async def get_tomorrows_events() -> List[Dict]:
+    return await _get_events(offset_days=1, days=1)
 
 
 async def get_weeks_events() -> List[Dict]:
-    return await _get_events(days=7)
+    return await _get_events(offset_days=0, days=7)
 
 
-async def _get_events(days: int) -> List[Dict]:
+# ---------------------------------------------------------------------------
+# Core query
+# ---------------------------------------------------------------------------
+
+async def _get_events(offset_days: int, days: int) -> List[Dict]:
+    """
+    Fetch events starting from (today + offset_days) midnight for `days` days.
+    All datetimes are anchored to Asia/Jerusalem (settings.timezone).
+    """
     creds = await get_credentials()
     if not creds:
         raise ValueError("Google credentials not configured. Visit /auth/google first.")
@@ -36,39 +55,50 @@ async def _get_events(days: int) -> List[Dict]:
     try:
         service = build("calendar", "v3", credentials=creds)
         tz = _tz()
-        now = datetime.now(tz)
-        # Use tz.localize on a naive midnight datetime to get the correct DST offset
-        start = tz.localize(datetime(now.year, now.month, now.day, 0, 0, 0))
-        end = start + timedelta(days=days)
+
+        time_min = _today_midnight(tz, offset_days)
+        time_max = time_min + timedelta(days=days)
+
+        logger.info(
+            f"[CALENDAR] query offset={offset_days} days={days} | "
+            f"timeMin={time_min.isoformat()} | timeMax={time_max.isoformat()}"
+        )
 
         result = service.events().list(
             calendarId="primary",
-            timeMin=start.isoformat(),
-            timeMax=end.isoformat(),
+            timeMin=time_min.isoformat(),
+            timeMax=time_max.isoformat(),
             singleEvents=True,
             orderBy="startTime",
         ).execute()
 
         events: List[Dict] = []
         for ev in result.get("items", []):
-            start_dt = ev.get("start", {})
-            time_str = (
-                datetime.fromisoformat(start_dt["dateTime"])
-                .astimezone(tz)
-                .strftime("%H:%M")
-                if "dateTime" in start_dt
-                else "כל היום"
-            )
+            ev_start = ev.get("start", {})
+
+            if "dateTime" in ev_start:
+                dt = datetime.fromisoformat(ev_start["dateTime"]).astimezone(tz)
+                time_str = dt.strftime("%H:%M")
+                date_str = dt.strftime("%Y-%m-%d")
+            else:
+                # All-day event
+                time_str = "כל היום"
+                date_str = ev_start.get("date", "")
+
             events.append({
                 "id": ev["id"],
+                "date": date_str,       # YYYY-MM-DD in Israel timezone
+                "time": time_str,       # HH:MM in Israel timezone
                 "title": ev.get("summary", "(ללא כותרת)"),
-                "time": time_str,
                 "location": ev.get("location", ""),
                 "description": (ev.get("description") or "")[:200],
             })
+
+        logger.info(f"[CALENDAR] returned {len(events)} events")
         return events
+
     except HttpError as e:
-        logger.error(f"[CALENDAR] API error getting events: {e}")
+        logger.error(f"[CALENDAR] API error: {e}")
         raise
 
 

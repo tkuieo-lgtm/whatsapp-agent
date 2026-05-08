@@ -54,12 +54,17 @@ TOOLS = [
     },
     {
         "name": "get_todays_events",
-        "description": "קבל את כל האירועים ביומן להיום",
+        "description": "קבל את כל האירועים ביומן להיום בלבד. כל אירוע כולל date (YYYY-MM-DD) ו-time (HH:MM) בשעון ישראל",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_tomorrows_events",
+        "description": "קבל את כל האירועים ביומן למחר בלבד. כל אירוע כולל date (YYYY-MM-DD) ו-time (HH:MM) בשעון ישראל",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_weeks_events",
-        "description": "קבל את כל האירועים ביומן לשבוע הקרוב",
+        "description": "קבל את כל האירועים ביומן ל-7 הימים הקרובים. כל אירוע כולל date (YYYY-MM-DD) ו-time (HH:MM) בשעון ישראל",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -239,7 +244,17 @@ async def _execute_tool(name: str, inp: Dict) -> Tuple[str, bool]:
             lines = ["📅 אירועים להיום:"]
             for ev in events:
                 loc = f" ({ev['location']})" if ev.get("location") else ""
-                lines.append(f"• {ev['time']} — {ev['title']}{loc}")
+                lines.append(f"• {ev['date']} {ev['time']} — {ev['title']}{loc}")
+            return "\n".join(lines), False
+
+        if name == "get_tomorrows_events":
+            events = await calendar_service.get_tomorrows_events()
+            if not events:
+                return "אין אירועים ביומן למחר.", False
+            lines = ["📅 אירועים למחר:"]
+            for ev in events:
+                loc = f" ({ev['location']})" if ev.get("location") else ""
+                lines.append(f"• {ev['date']} {ev['time']} — {ev['title']}{loc}")
             return "\n".join(lines), False
 
         if name == "get_weeks_events":
@@ -248,7 +263,8 @@ async def _execute_tool(name: str, inp: Dict) -> Tuple[str, bool]:
                 return "אין אירועים ביומן השבוע.", False
             lines = ["📅 אירועים השבוע:"]
             for ev in events:
-                lines.append(f"• {ev['time']} — {ev['title']}")
+                loc = f" ({ev['location']})" if ev.get("location") else ""
+                lines.append(f"• {ev['date']} {ev['time']} — {ev['title']}{loc}")
             return "\n".join(lines), False
 
         # --- Write tools ---
