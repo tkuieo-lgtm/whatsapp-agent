@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     claude_rate_limit_per_hour: int = 20
 
     class Config:
-        env_file = ".env"
+        # Try root .env for local dev; Railway injects env vars directly so no file is needed there
+        env_file = ("../.env", ".env")
 
 
 settings = Settings()
