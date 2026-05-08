@@ -16,7 +16,7 @@ async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str
     import openai
     client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
 
-    # Choose file suffix based on MIME type
+    # Determine extension — Whisper requires an explicit, recognisable extension
     if "ogg" in mime_type:
         suffix = ".ogg"
     elif "mp4" in mime_type or "m4a" in mime_type:
@@ -29,12 +29,19 @@ async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str
         suffix = ".ogg"
 
     audio_bytes = base64.b64decode(audio_data)
+    logger.info(f"[VOICE] Received audio, size: {len(audio_bytes)} bytes, mime: {mime_type}")
 
     tmp_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-            f.write(audio_bytes)
-            tmp_path = f.name
+        # Write to a named temp file and CLOSE it before opening again for Whisper
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+        try:
+            os.write(tmp_fd, audio_bytes)
+        finally:
+            os.close(tmp_fd)  # Ensure file is fully flushed and closed
+
+        logger.info(f"[VOICE] Temp file path: {tmp_path}")
+        logger.info("[VOICE] Calling Whisper API...")
 
         with open(tmp_path, "rb") as audio_file:
             transcript = await client.audio.transcriptions.create(
@@ -47,7 +54,7 @@ async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str
         return transcript.text
 
     except Exception as e:
-        logger.error(f"[VOICE] Transcription error: {e}")
+        logger.error(f"[VOICE] Error: {type(e).__name__}: {str(e)}")
         raise
     finally:
         if tmp_path and os.path.exists(tmp_path):
