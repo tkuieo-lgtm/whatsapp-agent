@@ -86,7 +86,7 @@ client.on("message", async (message) => {
         message: message.body,
         timestamp: new Date().toISOString(),
       },
-      { timeout: 10000 }
+      { timeout: 30000 }
     );
   } catch (err) {
     console.error("[WHATSAPP] Failed to forward message to backend:", err.message);
