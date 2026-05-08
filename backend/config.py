@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     reminder_check_hours: int = 4
     reminder_threshold_hours: int = 6
     claude_model: str = "claude-sonnet-4-6"
-    claude_rate_limit_per_hour: int = 20
+    claude_rate_limit_per_hour: int = 100
 
     class Config:
         env_file = ("../.env", ".env")
