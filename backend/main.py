@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("[STARTUP] WhatsApp AI Agent starting…")
+    from config import settings as s
+    logger.info(f"[STARTUP] Bot name: {s.bot_name}")
+    logger.info(f"[STARTUP] Owner phone: {s.owner_phone}")
+    logger.info(f"[STARTUP] Claude model: {s.claude_model}")
+    logger.info(f"[STARTUP] Rate limit: {s.claude_rate_limit_per_hour} calls/hour")
     ok = await verify_tables()
     if not ok:
         logger.warning("[STARTUP] Some Supabase tables are missing — see output above.")

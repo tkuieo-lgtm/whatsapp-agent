@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -12,9 +11,11 @@ async def web_search(query: str, max_results: int = 5) -> str:
 
     try:
         from tavily import TavilyClient
+        logger.info(f"[SEARCH] Tavily query: {query!r}")
         client = TavilyClient(api_key=settings.tavily_api_key)
         response = client.search(query, max_results=max_results)
         results = response.get("results", [])
+        logger.info(f"[SEARCH] Tavily returned {len(results)} results")
 
         if not results:
             return f"לא נמצאו תוצאות עבור: {query}"
@@ -29,5 +30,6 @@ async def web_search(query: str, max_results: int = 5) -> str:
         return "\n".join(lines)
 
     except Exception as e:
-        logger.error(f"[SEARCH] Tavily error: {e}")
-        return f"❌ שגיאה בחיפוש: {e}"
+        logger.error(f"[SEARCH] Tavily error: {type(e).__name__}: {e}")
+        # Don't bubble up as a rate-limit error — give a clear, specific message
+        return f"⚠️ החיפוש אינו זמין כרגע. נסה שוב מאוחר יותר.\n(שגיאה: {type(e).__name__})"

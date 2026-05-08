@@ -254,8 +254,12 @@ async def _check_rate_limit() -> bool:
                 .where(ActionLog.action_type == "claude_call")
                 .where(ActionLog.created_at >= one_hour_ago)
             )
-            return (result.scalar() or 0) < settings.claude_rate_limit_per_hour
-    except Exception:
+            count = result.scalar() or 0
+        limit = settings.claude_rate_limit_per_hour
+        logger.info(f"[RATE] Claude calls last hour: {count}/{limit}")
+        return count < limit
+    except Exception as e:
+        logger.error(f"[RATE] Rate limit check failed: {e}")
         return True
 
 
@@ -432,7 +436,7 @@ async def process_message(
     group_sender: Optional[str] = None,
 ) -> str:
     if not await _check_rate_limit():
-        return "⚠️ הגעתי למגבלת הקריאות לשעה. נסה שוב מאוחר יותר."
+        return f"⚠️ הגעתי למגבלת {settings.claude_rate_limit_per_hour} קריאות לשעה. נסה שוב עוד כמה דקות."
 
     await _log_action("claude_call", {"message": user_message[:100], "is_group": is_group}, "started")
     await _save_history("user", user_message)
@@ -443,7 +447,9 @@ async def process_message(
         messages.append({"role": "user", "content": user_message})
 
     tz = pytz.timezone(settings.timezone)
-    current_dt = datetime.now(tz).strftime("%Y-%m-%d %H:%M (%A)")
+    _hebrew_days = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
+    now_il = datetime.now(tz)
+    current_dt = f"{now_il.strftime('%Y-%m-%d %H:%M')} (יום {_hebrew_days[now_il.weekday()]})"
 
     if is_group:
         system = _SYSTEM_GROUP.format(bot_name=settings.bot_name, current_datetime=current_dt)
@@ -453,7 +459,8 @@ async def process_message(
         tools = _TOOLS_DM
 
     try:
-        for _ in range(5):
+        for iteration in range(5):
+            logger.info(f"[CLAUDE] API call iteration {iteration+1}, messages={len(messages)}")
             response = _client.messages.create(
                 model=settings.claude_model,
                 max_tokens=2048,
@@ -495,7 +502,7 @@ async def process_message(
                 break
 
     except Exception as e:
-        logger.error(f"[CLAUDE] Error: {e}")
-        return f"❌ שגיאה בעיבוד ההודעה: {e}"
+        logger.error(f"[CLAUDE] Error: {type(e).__name__}: {e}")
+        return f"❌ שגיאה בעיבוד ההודעה: {type(e).__name__}"
 
     return "מצטער, לא הצלחתי לעבד את הבקשה."
