@@ -35,7 +35,7 @@ async def send_voice_message(text: str, chat_id: Optional[str] = None, context_t
         audio_b64 = base64.b64encode(audio_bytes).decode()
 
         target = chat_id or f"{settings.owner_phone}@c.us"
-        payload: dict = {"to": target, "audio": audio_b64, "mime": "audio/mpeg"}
+        payload: dict = {"to": target, "audio": audio_b64, "mime": "audio/ogg; codecs=opus"}
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(

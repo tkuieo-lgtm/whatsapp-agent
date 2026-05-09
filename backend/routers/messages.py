@@ -51,7 +51,6 @@ async def _handle_message(msg: IncomingMessage) -> None:
                 await whatsapp_service.send_message("לא הצלחתי להבין, נסה שוב 🎤")
                 return
             logger.info(f"[VOICE] Transcribed: {text[:80]}")
-            await whatsapp_service.send_message(f"🎤 *תמלול:* {text}")
         except Exception as e:
             logger.error(f"[VOICE] Transcription failed: {e}")
             await whatsapp_service.send_message("❌ לא הצלחתי לתמלל את ההודעה הקולית.")

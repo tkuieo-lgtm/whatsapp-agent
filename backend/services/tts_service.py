@@ -6,23 +6,34 @@ logger = logging.getLogger(__name__)
 
 
 async def text_to_speech(text: str) -> bytes:
-    """Convert text to speech using gTTS (free, no API key). Returns mp3 bytes."""
+    """Convert text to OGG Opus via gTTS + pydub (WhatsApp-compatible voice note)."""
     from gtts import gTTS
+    from pydub import AudioSegment
 
     logger.info(f"[TTS] Generating speech for {len(text)} chars…")
 
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
-    os.close(tmp_fd)
+    mp3_fd, mp3_path = tempfile.mkstemp(suffix=".mp3")
+    ogg_fd, ogg_path = tempfile.mkstemp(suffix=".ogg")
+    os.close(mp3_fd)
+    os.close(ogg_fd)
+
     try:
-        tts = gTTS(text=text, lang="iw")   # iw = Hebrew in gTTS
-        tts.save(tmp_path)
-        with open(tmp_path, "rb") as f:
+        # Step 1: gTTS → mp3
+        gTTS(text=text, lang="iw").save(mp3_path)
+
+        # Step 2: mp3 → ogg/opus (WhatsApp requires this format)
+        audio = AudioSegment.from_mp3(mp3_path)
+        audio.export(ogg_path, format="ogg", codec="libopus")
+
+        with open(ogg_path, "rb") as f:
             audio_bytes = f.read()
-        logger.info(f"[TTS] Generated {len(audio_bytes)} bytes")
+
+        logger.info(f"[TTS] Generated {len(audio_bytes)} bytes (ogg/opus)")
         return audio_bytes
     finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        for p in (mp3_path, ogg_path):
+            if os.path.exists(p):
+                os.unlink(p)
 
 
 def should_use_voice(
