@@ -287,7 +287,7 @@ async def _save_history(role: str, content: str, channel: str = "whatsapp") -> N
         logger.error(f"[CLAUDE] Failed to save history: {e}")
 
 
-async def _get_history(limit: int = 10) -> List[Dict]:
+async def _get_history(limit: int = 20) -> List[Dict]:
     try:
         async with AsyncSessionLocal() as session:
             result = await session.execute(
@@ -625,3 +625,89 @@ async def process_message(
         return f"❌ שגיאה בעיבוד ההודעה: {type(e).__name__}", ""
 
     return "מצטער, לא הצלחתי לעבד את הבקשה.", ""
+
+
+# ---------------------------------------------------------------------------
+# Shared approval handler — used by WhatsApp, Web chat, and Telegram
+# ---------------------------------------------------------------------------
+
+_YES_WORDS = {"כן", "yes", "y", "אישור", "ok", "אוקיי"}
+_NO_WORDS  = {"לא", "no", "n", "ביטול", "cancel"}
+
+
+async def check_and_handle_approval(
+    text: str,
+    channel: str = "whatsapp",
+) -> Optional[Tuple[str, str]]:
+    """
+    If `text` is an approval/rejection response AND there is an open pending action,
+    execute or cancel it and return (response_text, tool_used).
+    Returns None if the text is not an approval keyword or there is no pending action.
+    """
+    from sqlalchemy import update as sa_update
+    from database import ActionLog, AsyncSessionLocal, PendingAction
+
+    lower = text.lower().strip()
+    if lower not in (_YES_WORDS | _NO_WORDS):
+        return None
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(PendingAction)
+            .where(PendingAction.status == "pending")
+            .order_by(PendingAction.created_at.desc())
+            .limit(1)
+        )
+        pending = result.scalar_one_or_none()
+
+    if not pending:
+        return None
+
+    if datetime.now(timezone.utc) > pending.expires_at:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                sa_update(PendingAction)
+                .where(PendingAction.id == pending.id)
+                .values(status="expired")
+            )
+            await session.commit()
+        return "⏰ הפעולה פגה. אנא בקש שוב.", ""
+
+    if lower in _YES_WORDS:
+        # Atomic claim — prevents double execution
+        from sqlalchemy import update as sa_update
+        async with AsyncSessionLocal() as session:
+            upd = await session.execute(
+                sa_update(PendingAction)
+                .where(PendingAction.id == pending.id)
+                .where(PendingAction.status == "pending")
+                .values(status="approved")
+                .returning(PendingAction.type, PendingAction.payload)
+            )
+            row = upd.first()
+            if not row:
+                await session.commit()
+                return "הפעולה כבר בוצעה.", ""
+            action_type, payload = row.type, row.payload
+            await session.commit()
+
+        response = await execute_approved_action(action_type, payload)
+
+        async with AsyncSessionLocal() as session:
+            session.add(ActionLog(action_type=action_type, details=payload, status="approved"))
+            await session.commit()
+
+        await _save_history("assistant", response, channel=channel)
+        return response, action_type
+
+    else:
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                sa_update(PendingAction)
+                .where(PendingAction.id == pending.id)
+                .values(status="rejected")
+            )
+            await session.commit()
+        response = "✅ הפעולה בוטלה. איך אוכל לעזור?"
+        await _save_history("assistant", response, channel=channel)
+        return response, ""

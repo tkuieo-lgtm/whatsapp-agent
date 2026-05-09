@@ -1,5 +1,7 @@
 import base64
+import hashlib
 import logging
+import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -10,6 +12,9 @@ from config import settings
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
+
+# Server-side dedup: {hash: (response, timestamp)}
+_recent: dict = {}
 
 # ---------------------------------------------------------------------------
 # HTML page — WhatsApp-style chat with microphone support
@@ -317,8 +322,24 @@ async def chat_send(body: ChatMessage):
     if not text:
         return {"response": "שלח הודעה טקסט או הקלטה קולית."}
 
+    # --- Server-side dedup (prevents double-send from rapid retries) ---
+    key = hashlib.md5(f"{body.password}:{text}".encode()).hexdigest()
+    now = time.time()
+    _recent.update({k: v for k, v in _recent.items() if now - v[1] < 10})  # expire old
+    if key in _recent:
+        logger.info(f"[CHAT] Dedup hit for: {text[:40]}")
+        return _recent[key][0]
+
+    # --- Approval flow (shared with WhatsApp) ---
+    from services.claude_service import check_and_handle_approval, process_message
+    approval = await check_and_handle_approval(text, channel="web")
+    if approval is not None:
+        response_text, _ = approval
+        result: dict = {"response": response_text}
+        _recent[key] = (result, now)
+        return result
+
     # --- Process ---
-    from services.claude_service import process_message
     response_text, _ = await process_message(text, channel="web")
 
     # --- TTS only when user sent voice (mirrors voice with voice) ---
@@ -336,6 +357,7 @@ async def chat_send(body: ChatMessage):
         result["transcription"] = transcription
     if response_audio:
         result["audio"] = response_audio   # pre-loaded audio for the 🔊 button
+    _recent[key] = (result, now)
     return result
 
 

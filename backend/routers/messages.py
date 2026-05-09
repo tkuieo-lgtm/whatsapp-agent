@@ -9,7 +9,7 @@ from config import settings
 from database import ActionLog, AsyncSessionLocal, GroupInteraction, PendingAction, VoicePreference
 from models.schemas import IncomingMessage
 from services import whatsapp_service
-from services.claude_service import execute_approved_action, process_message
+from services.claude_service import check_and_handle_approval, execute_approved_action, process_message
 from services.tts_service import should_use_voice
 
 router = APIRouter()
@@ -69,50 +69,13 @@ async def _handle_message(msg: IncomingMessage) -> None:
         if feedback:
             await _log_voice_preference("feedback", used_voice=feedback == "positive", feedback=feedback)
 
-    # --- Approval flow (DM only) ---
-    if not msg.is_group and lower in (_YES | _NO):
-        async with AsyncSessionLocal() as session:
-            result = await session.execute(
-                select(PendingAction)
-                .where(PendingAction.status == "pending")
-                .order_by(PendingAction.created_at.desc())
-                .limit(1)
-            )
-            pending = result.scalar_one_or_none()
-
-            if pending:
-                if datetime.now(timezone.utc) > pending.expires_at:
-                    pending.status = "expired"
-                    await session.commit()
-                    await whatsapp_service.send_message("⏰ הפעולה פגה. אנא בקש שוב.")
-                    return
-
-                if lower in _YES:
-                    # Atomic update — only proceeds if still "pending" (prevents double-send)
-                    upd = await session.execute(
-                        update(PendingAction)
-                        .where(PendingAction.id == pending.id)
-                        .where(PendingAction.status == "pending")
-                        .values(status="approved")
-                        .returning(PendingAction.type, PendingAction.payload)
-                    )
-                    row = upd.first()
-                    if not row:
-                        await whatsapp_service.send_message("הפעולה כבר בוצעה.", chat_id=reply_chat_id)
-                        return
-                    action_type, payload = row.type, row.payload
-                    await session.commit()
-                    response_text = await execute_approved_action(action_type, payload)
-                    async with AsyncSessionLocal() as ls:
-                        ls.add(ActionLog(action_type=action_type, details=payload, status="approved"))
-                        await ls.commit()
-                else:
-                    pending.status = "rejected"
-                    await session.commit()
-                    response_text = "✅ הפעולה בוטלה. איך אוכל לעזור?"
-
-                await whatsapp_service.send_message(response_text, chat_id=reply_chat_id)
-                return
+    # --- Approval flow (DM only — uses shared helper) ---
+    if not msg.is_group:
+        approval_result = await check_and_handle_approval(text, channel="whatsapp")
+        if approval_result is not None:
+            response_text, _ = approval_result
+            await whatsapp_service.send_message(response_text, chat_id=reply_chat_id)
+            return
 
     # --- Process via Claude ---
     try:
