@@ -83,3 +83,18 @@ async def auth_status():
     from services.gmail_service import get_credentials
     creds = await get_credentials()
     return {"google_authenticated": creds is not None and creds.valid}
+
+
+@router.delete("/auth/google/revoke")
+async def google_revoke():
+    """Delete stored Google token so the user can re-authenticate cleanly."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from database import AsyncSessionLocal, Setting
+    from datetime import datetime, timezone
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            __import__("sqlalchemy").delete(Setting).where(Setting.key == "google_tokens")
+        )
+        await session.commit()
+    logger.info("[AUTH] Google token revoked — re-auth required")
+    return {"message": f"Token cleared. Visit {settings.backend_url}/auth/google to reconnect."}

@@ -39,7 +39,8 @@ async def get_credentials() -> Optional[Credentials]:
     logger.info(f"[GMAIL] token in DB: {token_in_db}")
 
     if not token_in_db:
-        logger.error("[GMAIL] No google_tokens in DB")
+        from config import settings as _s
+        logger.error(f"[GMAIL] Re-auth required → {_s.backend_url}/auth/google")
         return None
 
     td = setting.value

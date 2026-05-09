@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from config import settings
 from database import ActionLog, AsyncSessionLocal, GroupInteraction, PendingAction, VoicePreference
@@ -88,8 +88,19 @@ async def _handle_message(msg: IncomingMessage) -> None:
                     return
 
                 if lower in _YES:
-                    pending.status = "approved"
-                    action_type, payload = pending.type, pending.payload
+                    # Atomic update — only proceeds if still "pending" (prevents double-send)
+                    upd = await session.execute(
+                        update(PendingAction)
+                        .where(PendingAction.id == pending.id)
+                        .where(PendingAction.status == "pending")
+                        .values(status="approved")
+                        .returning(PendingAction.type, PendingAction.payload)
+                    )
+                    row = upd.first()
+                    if not row:
+                        await whatsapp_service.send_message("הפעולה כבר בוצעה.", chat_id=reply_chat_id)
+                        return
+                    action_type, payload = row.type, row.payload
                     await session.commit()
                     response_text = await execute_approved_action(action_type, payload)
                     async with AsyncSessionLocal() as ls:

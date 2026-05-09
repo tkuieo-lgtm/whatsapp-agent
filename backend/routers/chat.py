@@ -104,26 +104,68 @@ function addBubble(role, text, audioB64) {{
   const b = document.createElement('div');
   b.className = 'bubble';
   b.textContent = text;
-  const ts = document.createElement('div');
-  ts.className = 'ts';
-  ts.textContent = new Date().toLocaleTimeString('he-IL', {{hour:'2-digit',minute:'2-digit'}});
   wrap.appendChild(b);
-  wrap.appendChild(ts);
+
+  // 🔊 button on bot messages — click to play, not auto-play
+  if (role === 'bot') {{
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:2px';
+    const ts = document.createElement('span');
+    ts.className = 'ts';
+    ts.textContent = new Date().toLocaleTimeString('he-IL', {{hour:'2-digit',minute:'2-digit'}});
+    const speakBtn = document.createElement('button');
+    speakBtn.textContent = '🔊';
+    speakBtn.title = 'השמע';
+    speakBtn.style.cssText = 'background:none;border:none;cursor:pointer;font-size:14px;padding:0 2px;opacity:.7';
+    if (audioB64) {{
+      speakBtn.dataset.audio = audioB64;
+      speakBtn.onclick = () => playAudio(speakBtn.dataset.audio);
+    }} else {{
+      speakBtn.onclick = () => requestAudio(text, speakBtn);
+    }}
+    row.appendChild(ts);
+    row.appendChild(speakBtn);
+    wrap.appendChild(row);
+  }} else {{
+    const ts = document.createElement('div');
+    ts.className = 'ts';
+    ts.textContent = new Date().toLocaleTimeString('he-IL', {{hour:'2-digit',minute:'2-digit'}});
+    wrap.appendChild(ts);
+  }}
+
   document.getElementById('messages').appendChild(wrap);
   b.scrollIntoView({{block:'end'}});
-  if (audioB64) playAudio(audioB64);
   return b;
 }}
 
 function playAudio(b64) {{
   try {{
     const audio = new Audio(`data:audio/ogg;base64,${{b64}}`);
-    audio.play().catch(()=>{{
-      // Fallback: try mp3
-      const a2 = new Audio(`data:audio/mpeg;base64,${{b64}}`);
-      a2.play().catch(e => console.warn('Audio play failed:', e));
+    audio.play().catch(() => {{
+      new Audio(`data:audio/mpeg;base64,${{b64}}`).play().catch(e => console.warn('Audio:', e));
     }});
-  }} catch(e) {{ console.warn('Audio init failed:', e); }}
+  }} catch(e) {{ console.warn('Audio init:', e); }}
+}}
+
+async function requestAudio(text, btn) {{
+  btn.disabled = true;
+  btn.textContent = '⏳';
+  try {{
+    const r = await fetch('/chat/speak', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{text, password: pwd}})
+    }});
+    const d = await r.json();
+    if (d.audio) {{
+      btn.dataset.audio = d.audio;
+      btn.textContent = '🔊';
+      btn.disabled = false;
+      playAudio(d.audio);
+    }}
+  }} catch(e) {{
+    btn.textContent = '❌';
+  }}
 }}
 
 // ---------------------------------------------------------------------------
@@ -279,19 +321,38 @@ async def chat_send(body: ChatMessage):
     from services.claude_service import process_message
     response_text, _ = await process_message(text, channel="web")
 
-    # --- TTS response ---
+    # --- TTS only when user sent voice (mirrors voice with voice) ---
     response_audio = None
-    try:
-        from services.tts_service import should_use_voice, text_to_speech
-        if should_use_voice(response_text, was_voice_input=was_voice):
+    if was_voice:
+        try:
+            from services.tts_service import text_to_speech
             audio_bytes = await text_to_speech(response_text)
             response_audio = base64.b64encode(audio_bytes).decode()
-    except Exception as e:
-        logger.warning(f"[CHAT] TTS failed: {e}")
+        except Exception as e:
+            logger.warning(f"[CHAT] TTS failed: {e}")
 
     result: dict = {"response": response_text}
     if transcription:
         result["transcription"] = transcription
     if response_audio:
-        result["audio"] = response_audio
+        result["audio"] = response_audio   # pre-loaded audio for the 🔊 button
     return result
+
+
+class SpeakRequest(BaseModel):
+    text: str
+    password: str
+
+
+@router.post("/speak")
+async def chat_speak(body: SpeakRequest):
+    """Generate TTS for a specific message on demand (when user clicks 🔊)."""
+    if body.password != settings.web_chat_password:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        from services.tts_service import text_to_speech
+        audio_bytes = await text_to_speech(body.text)
+        return {"audio": base64.b64encode(audio_bytes).decode()}
+    except Exception as e:
+        logger.error(f"[CHAT] Speak error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
