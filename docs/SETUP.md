@@ -202,23 +202,30 @@ CLAUDE_RATE_LIMIT_PER_HOUR=20
 
 **New Service → GitHub repo → Root Directory: `whatsapp`**
 
-Railway ישתמש ב-`Dockerfile` שכולל Chromium.
+Railway ישתמש ב-`Dockerfile` שכולל Chromium.  
+הסשן נשמר אוטומטית ב-PostgreSQL — לא צריך Volume ולא QR חוזר אחרי restart.
 
 **Environment Variables**:
 ```
 OWNER_PHONE=972546670073
+BOT_NAME=מקס
 BACKEND_URL=https://YOUR-BACKEND.up.railway.app
+DATABASE_URL=${{Postgres.DATABASE_URL}}
 PORT=3000
 ```
 
-**Volume לשמירת הסשן** (חיוני — בלי זה צריך לסרוק QR בכל restart):
-- Settings → Volumes → **Add Volume**
-- Mount Path: `/app/.wwebjs_auth`
+> `${{Postgres.DATABASE_URL}}` — Railway ממלא זאת אוטומטית מה-PostgreSQL service.
 
-**סריקת QR ב-Railway** — אין טרמינל, אבל יש endpoint:
+**סריקת QR ראשונה (פעם אחת בלבד):**
 1. לאחר deploy, פתח: `https://YOUR-WHATSAPP.up.railway.app/qr`
-2. הדף יציג את ה-QR — סרוק עם WhatsApp Business
-3. הסשן נשמר ב-Volume — לא צריך לסרוק שוב לאחר מכן
+2. הדף יציג QR code — סרוק עם WhatsApp Business
+3. הסשן נשמר ב-PostgreSQL בטבלת `whatsapp_sessions`
+4. כל restart עתידי — הסשן משוחזר אוטומטית, ללא QR
+
+**מה קורה מאחורי הקלעים:**
+- `authenticated` event → שמירה ל-DB תוך 3 שניות
+- `ready` event → שמירה נוספת תוך 5 שניות
+- גיבוי אוטומטי כל 5 דקות
 
 ---
 
