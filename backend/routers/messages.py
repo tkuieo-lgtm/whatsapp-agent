@@ -105,7 +105,7 @@ async def _handle_message(msg: IncomingMessage) -> None:
 
     # --- Process via Claude ---
     try:
-        response_text = await process_message(
+        response_text, tool_used = await process_message(
             text,
             is_group=msg.is_group,
             group_sender=msg.group_sender,
@@ -119,6 +119,16 @@ async def _handle_message(msg: IncomingMessage) -> None:
             await whatsapp_service.send_voice_message(response_text, chat_id=reply_chat_id)
         else:
             await whatsapp_service.send_message(response_text, chat_id=reply_chat_id)
+
+        # Background self-reflection (non-blocking)
+        import asyncio
+        from services.reflection_service import reflect_on_response
+        asyncio.create_task(reflect_on_response(
+            message_in=text,
+            response_out=response_text,
+            tool_used=tool_used,
+            format_used="voice" if (use_voice and not msg.is_group) else "text",
+        ))
 
         # Log group interactions
         if msg.is_group:

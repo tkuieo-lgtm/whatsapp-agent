@@ -520,9 +520,9 @@ async def process_message(
     user_message: str,
     is_group: bool = False,
     group_sender: Optional[str] = None,
-) -> str:
+) -> Tuple[str, str]:   # (response_text, comma-separated tools used)
     if not await _check_rate_limit():
-        return f"⚠️ הגעתי למגבלת {settings.claude_rate_limit_per_hour} קריאות לשעה. נסה שוב עוד כמה דקות."
+        return f"⚠️ הגעתי למגבלת {settings.claude_rate_limit_per_hour} קריאות לשעה. נסה שוב עוד כמה דקות.", ""
 
     await _log_action("claude_call", {"message": user_message[:100], "is_group": is_group}, "started")
     await _save_history("user", user_message)
@@ -551,6 +551,8 @@ async def process_message(
         )
         tools = _TOOLS_DM
 
+    tools_used: List[str] = []
+
     try:
         for iteration in range(5):
             logger.info(f"[CLAUDE] API call iteration {iteration+1}, messages={len(messages)}")
@@ -565,7 +567,7 @@ async def process_message(
             if response.stop_reason == "end_turn":
                 text = "".join(b.text for b in response.content if hasattr(b, "text"))
                 await _save_history("assistant", text)
-                return text
+                return text, ",".join(tools_used)
 
             if response.stop_reason == "tool_use":
                 assistant_content = []
@@ -582,11 +584,12 @@ async def process_message(
                 for b in response.content:
                     if b.type != "tool_use":
                         continue
+                    tools_used.append(b.name)
                     result, needs_approval = await _execute_tool(b.name, b.input, is_group)
                     if needs_approval:
                         await _create_pending_action(b.name, b.input)
                         await _save_history("assistant", result)
-                        return result
+                        return result, ",".join(tools_used)
                     tool_results.append(
                         {"type": "tool_result", "tool_use_id": b.id, "content": result}
                     )
@@ -596,6 +599,6 @@ async def process_message(
 
     except Exception as e:
         logger.error(f"[CLAUDE] Error: {type(e).__name__}: {e}")
-        return f"❌ שגיאה בעיבוד ההודעה: {type(e).__name__}"
+        return f"❌ שגיאה בעיבוד ההודעה: {type(e).__name__}", ""
 
-    return "מצטער, לא הצלחתי לעבד את הבקשה."
+    return "מצטער, לא הצלחתי לעבד את הבקשה.", ""
