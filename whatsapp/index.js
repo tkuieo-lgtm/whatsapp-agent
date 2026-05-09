@@ -35,6 +35,8 @@ client.on("qr", (qr) => {
 
 client.on("ready", () => {
   console.log(`[WHATSAPP] ${BOT_NAME} ready. Owner: ${OWNER_PHONE}`);
+  console.log(`[WHATSAPP] Endpoints: /send /send-voice /health /qr`);
+  console.log(`[WHATSAPP] Voice detection: ptt + audio messages enabled`);
 });
 
 client.on("auth_failure", (msg) => {
@@ -118,6 +120,8 @@ client.on("message", async (message) => {
   // --- DIRECT MESSAGE ---
   const { candidates } = await resolveNumber(message);
   if (!isOwner(candidates)) return;
+
+  console.log(`[MSG] type=${message.type} hasMedia=${message.hasMedia} body=${message.body?.slice(0,40)}`);
 
   // Voice note
   const isVoice = message.hasMedia && (message.type === "ptt" || message.type === "audio");
