@@ -109,10 +109,26 @@ async function saveSessionToDB() {
 }
 
 // ---------------------------------------------------------------------------
-// Bootstrap — restore session before starting client
+// Bootstrap — HTTP server starts first so Railway health checks pass
+// immediately, then session restore + WhatsApp client init follow.
 // ---------------------------------------------------------------------------
 
 async function main() {
+  // ── 1. Start express BEFORE anything else ──────────────────────────────
+  const app = express();
+  app.use(express.json({ limit: "50mb" }));
+
+  // Always-200 health check — Railway needs this to stay up while WA loads
+  app.get("/health", (_req, res) => res.json({ status: "ok" }));
+
+  await new Promise((resolve) => {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`[SERVER] ${BOT_NAME} bridge on 0.0.0.0:${PORT}`);
+      resolve();
+    });
+  });
+
+  // ── 2. Restore WhatsApp session from DB ────────────────────────────────
   await restoreSessionFromDB();
 
   // ---------------------------------------------------------------------------
@@ -250,11 +266,8 @@ async function main() {
   });
 
   // ---------------------------------------------------------------------------
-  // HTTP server
+  // HTTP routes (app already started above)
   // ---------------------------------------------------------------------------
-  const app = express();
-  app.use(express.json({ limit: "50mb" }));
-
   app.post("/send", async (req, res) => {
     const { phone, message, chat_id } = req.body;
     if (!message) return res.status(400).json({ error: "message is required" });
@@ -283,8 +296,9 @@ async function main() {
     }
   });
 
-  app.get("/health", (_req, res) => {
-    res.json({ status: client.info ? "ready" : "initializing", ready: Boolean(client.info) });
+  // Detailed WhatsApp status (separate from /health)
+  app.get("/status", (_req, res) => {
+    res.json({ whatsapp: client.info ? "ready" : "initializing", ready: Boolean(client.info) });
   });
 
   app.get("/qr", (_req, res) => {
@@ -307,10 +321,6 @@ async function main() {
     setTimeout(()=>location.reload(),18000);
   </script>
 </body></html>`);
-  });
-
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[SERVER] ${BOT_NAME} bridge on 0.0.0.0:${PORT}`);
   });
 
   client.initialize();
