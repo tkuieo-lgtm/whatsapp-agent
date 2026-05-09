@@ -13,6 +13,14 @@ const BACKEND_URL  = process.env.BACKEND_URL || "http://localhost:8000";
 const DATABASE_URL = process.env.DATABASE_URL;
 const PORT         = process.env.PORT || 3000;
 console.log(`[SERVER] Starting on port: ${PORT}`);
+
+// Prevent a single crash from taking down the whole process
+process.on("uncaughtException", (err) => {
+  console.error("[CRASH] uncaughtException:", err.message, err.stack);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[CRASH] unhandledRejection:", reason);
+});
 const SESSION_DIR  = "./.wwebjs_auth";
 
 if (!OWNER_PHONE) {
@@ -202,7 +210,16 @@ async function main() {
   // ---------------------------------------------------------------------------
   // Message handler
   // ---------------------------------------------------------------------------
+  // Dedup guard — prevents double-forwarding if the client reinitialises
+  const _seen = new Set();
+
   client.on("message", async (message) => {
+    if (_seen.has(message.id._serialized)) return;
+    _seen.add(message.id._serialized);
+    setTimeout(() => _seen.delete(message.id._serialized), 30000);
+
+    console.log(`[MSG] Received message, forwarding once to backend (id=${message.id._serialized?.slice(-8)})`);
+
     const isGroup = message.from.endsWith("@g.us");
 
     // --- GROUP ---
