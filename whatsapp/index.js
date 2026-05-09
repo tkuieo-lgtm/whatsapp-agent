@@ -12,6 +12,7 @@ const BOT_NAME     = process.env.BOT_NAME || "מקס";
 const BACKEND_URL  = process.env.BACKEND_URL || "http://localhost:8000";
 const DATABASE_URL = process.env.DATABASE_URL;
 const PORT         = process.env.PORT || 3000;
+console.log(`[SERVER] Starting on port: ${PORT}`);
 const SESSION_DIR  = "./.wwebjs_auth";
 
 if (!OWNER_PHONE) {

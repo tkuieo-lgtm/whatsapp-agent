@@ -27,4 +27,7 @@ RUN npm ci --omit=dev
 
 COPY . .
 
+# Tell Railway which port the app listens on
+EXPOSE 3000
+
 CMD ["node", "index.js"]
