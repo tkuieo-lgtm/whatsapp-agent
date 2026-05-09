@@ -309,8 +309,8 @@ async function main() {
 </body></html>`);
   });
 
-  app.listen(PORT, () => {
-    console.log(`[SERVER] ${BOT_NAME} bridge on port ${PORT}`);
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`[SERVER] ${BOT_NAME} bridge on 0.0.0.0:${PORT}`);
   });
 
   client.initialize();
