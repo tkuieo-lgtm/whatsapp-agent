@@ -165,12 +165,15 @@ async function main() {
     setTimeout(() => saveSessionToDB(), 3000);
   });
 
+  let _reconnectAttempts = 0;
+  const _backoffMs = [30_000, 60_000, 120_000];
+  const _maxBackoffMs = 5 * 60_000;
+
   client.on("ready", async () => {
+    _reconnectAttempts = 0;   // reset backoff counter on successful connection
     latestQR = null;
     console.log(`[WHATSAPP] ${BOT_NAME} ready. Owner: ${OWNER_PHONE}`);
     console.log(`[WHATSAPP] Endpoints: /send /send-voice /health /qr`);
-    console.log(`[WHATSAPP] Voice detection: ptt + audio messages enabled`);
-    // Save fresh session on every successful startup
     setTimeout(() => saveSessionToDB(), 5000);
   });
 
@@ -179,8 +182,11 @@ async function main() {
   });
 
   client.on("disconnected", (reason) => {
-    console.warn("[WHATSAPP] Disconnected:", reason);
-    setTimeout(() => client.initialize(), 5000);
+    console.warn(`[WHATSAPP] Disconnected (reason: ${reason})`);
+    const delay = _backoffMs[_reconnectAttempts] ?? _maxBackoffMs;
+    _reconnectAttempts++;
+    console.log(`[WHATSAPP] Reconnect attempt ${_reconnectAttempts} in ${delay / 1000}s…`);
+    setTimeout(() => client.initialize(), delay);
   });
 
   // Periodic session backup every 5 minutes
