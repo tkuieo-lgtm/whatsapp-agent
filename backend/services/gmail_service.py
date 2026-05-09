@@ -168,7 +168,7 @@ async def get_unread_emails(max_results: int = 10, smart_filter: bool = True) ->
             if len(emails) >= max_results:
                 break
             full = service.users().messages().get(
-                userId="me", messageId=msg["id"], format="full"
+                userId="me", id=msg["id"], format="full"
             ).execute()
             if smart_filter and _is_newsletter(full):
                 continue
@@ -258,7 +258,7 @@ async def search_emails(query: str, since_days: int = 7, max_results: int = 10) 
         emails: List[Dict] = []
         for msg in result.get("messages", []):
             full = service.users().messages().get(
-                userId="me", messageId=msg["id"], format="full"
+                userId="me", id=msg["id"], format="full"
             ).execute()
             hdrs = {
                 h["name"].lower(): h["value"]
@@ -290,7 +290,7 @@ async def get_emails_awaiting_reply(hours_threshold: int = 6) -> List[Dict]:
         emails: List[Dict] = []
         for msg in result.get("messages", []):
             full = service.users().messages().get(
-                userId="me", messageId=msg["id"], format="metadata",
+                userId="me", id=msg["id"], format="metadata",
                 metadataHeaders=["From", "Subject", "Date"],
             ).execute()
             if _is_newsletter(full):
@@ -325,7 +325,7 @@ async def get_recent_urgent_emails(minutes: int = 35) -> List[Dict]:
         emails: List[Dict] = []
         for msg in result.get("messages", []):
             full = service.users().messages().get(
-                userId="me", messageId=msg["id"], format="metadata",
+                userId="me", id=msg["id"], format="metadata",
                 metadataHeaders=["From", "Subject"],
             ).execute()
             hdrs = {
