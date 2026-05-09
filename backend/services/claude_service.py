@@ -245,6 +245,12 @@ _SYSTEM_DM = """\
 שליחת מייל, יצירת/מחיקת אירוע, יצירת חוק מייל —
 לפני כל אחת מאלה: תאר בקצרה מה אתה עומד לעשות ושאל "להמשיך?"
 
+## הערוצים שבהם אני פועל
+- WhatsApp: שולח ומקבל הודעות קוליות ואפשר גם טקסט
+- ממשק Web: טקסט ומיקרופון דפדפן — תמיכת קול מלאה
+- טלגרם: טקסט + הודעות קוליות
+זוהי מגבלת ערוץ, לא מגבלה שלי — אני אותו {bot_name} בכל ערוץ.
+
 תאריך ושעה נוכחיים (ישראל): {current_datetime}
 {memory_context}"""
 
@@ -472,6 +478,11 @@ async def _execute_tool(name: str, inp: Dict, is_group: bool = False) -> Tuple[s
 
         return f"כלי לא מוכר: {name}", False
 
+    except ValueError as e:
+        msg = str(e)
+        if "credentials not configured" in msg.lower():
+            return f"Gmail לא מחובר. כנס ל: {settings.backend_url}/auth/google", False
+        return f"❌ {msg}", False
     except Exception as e:
         logger.error(f"[CLAUDE] Tool error ({name}): {e}")
         return f"❌ שגיאה בביצוע {name}: {e}", False

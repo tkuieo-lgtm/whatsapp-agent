@@ -26,15 +26,23 @@ NEWSLETTER_KEYWORDS = ["unsubscribe", "newsletter", "mailing list", "opt-out"]
 
 async def get_credentials() -> Optional[Credentials]:
     """Load Google credentials from DB. Auto-refreshes if expired or invalid."""
+    import traceback
+    from config import settings as _settings
+
     async with AsyncSessionLocal() as session:
         result = await session.execute(
             select(Setting).where(Setting.key == "google_tokens")
         )
         setting = result.scalar_one_or_none()
-        if not setting:
-            logger.error("[GMAIL] No google_tokens in DB — visit /auth/google")
-            return None
-        td = setting.value
+
+    token_in_db = setting is not None
+    logger.info(f"[GMAIL] token in DB: {token_in_db}")
+
+    if not token_in_db:
+        logger.error("[GMAIL] No google_tokens in DB")
+        return None
+
+    td = setting.value
 
     # Restore expiry so creds.expired works correctly
     expiry = None
@@ -59,7 +67,6 @@ async def get_credentials() -> Optional[Credentials]:
         f"has_refresh={bool(creds.refresh_token)} scopes={creds.scopes}"
     )
 
-    # Refresh if expired OR if the token appears invalid (expiry was never stored)
     if (creds.expired or not creds.valid) and creds.refresh_token:
         logger.info("[GMAIL] Refreshing token…")
         try:
@@ -68,6 +75,7 @@ async def get_credentials() -> Optional[Credentials]:
             logger.info("[GMAIL] Token refreshed successfully")
         except Exception as e:
             logger.error(f"[GMAIL] Token refresh failed: {type(e).__name__}: {e}")
+            logger.error(f"[GMAIL] Full error:\n{traceback.format_exc()}")
             return None
 
     return creds
