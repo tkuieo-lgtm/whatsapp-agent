@@ -7,8 +7,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import verify_tables
-from routers import auth, logs, messages, rules, settings_router
+from routers import auth, chat, logs, messages, rules, settings_router
 from services.scheduler import setup_scheduler
+from services.telegram_service import start_telegram_bot, stop_telegram_bot
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -39,8 +40,10 @@ async def lifespan(app: FastAPI):
     if not ok:
         logger.warning("[STARTUP] Some Supabase tables are missing — see output above.")
     setup_scheduler()
+    await start_telegram_bot()
     logger.info("[STARTUP] Ready.")
     yield
+    await stop_telegram_bot()
     logger.info("[SHUTDOWN] Shutting down.")
 
 
@@ -62,6 +65,7 @@ app.include_router(auth.router)
 app.include_router(rules.router)
 app.include_router(settings_router.router)
 app.include_router(logs.router)
+app.include_router(chat.router)
 
 
 @app.get("/health")

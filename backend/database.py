@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, func
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -78,6 +78,7 @@ class ConversationHistory(Base):
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     role = Column(String, nullable=False)
     content = Column(Text, nullable=False)
+    channel = Column(String(20), default="whatsapp")  # whatsapp | web | telegram
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -172,6 +173,10 @@ async def verify_tables() -> bool:
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # Add channel column to existing deployments (idempotent)
+            await conn.execute(
+                text("ALTER TABLE conversation_history ADD COLUMN IF NOT EXISTS channel VARCHAR(20) DEFAULT 'whatsapp'")
+            )
         logger.info("[DB] All tables verified / created.")
         return True
     except Exception as e:

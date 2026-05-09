@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
     tavily_api_key: Optional[str] = None
     groq_api_key: Optional[str] = None
+    # Web chat
+    chat_password: str = "changeme"
+    # Telegram
+    telegram_bot_token: Optional[str] = None
+    owner_telegram_id: Optional[str] = None
     whatsapp_service_url: str = "http://localhost:3000"
     backend_url: str = "http://localhost:8000"
     timezone: str = "Asia/Jerusalem"

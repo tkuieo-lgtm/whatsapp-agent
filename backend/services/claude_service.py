@@ -271,10 +271,10 @@ _SYSTEM_GROUP = """\
 # DB helpers
 # ---------------------------------------------------------------------------
 
-async def _save_history(role: str, content: str) -> None:
+async def _save_history(role: str, content: str, channel: str = "whatsapp") -> None:
     try:
         async with AsyncSessionLocal() as session:
-            session.add(ConversationHistory(role=role, content=content))
+            session.add(ConversationHistory(role=role, content=content, channel=channel))
             await session.commit()
     except Exception as e:
         logger.error(f"[CLAUDE] Failed to save history: {e}")
@@ -520,12 +520,13 @@ async def process_message(
     user_message: str,
     is_group: bool = False,
     group_sender: Optional[str] = None,
+    channel: str = "whatsapp",
 ) -> Tuple[str, str]:   # (response_text, comma-separated tools used)
     if not await _check_rate_limit():
         return f"⚠️ הגעתי למגבלת {settings.claude_rate_limit_per_hour} קריאות לשעה. נסה שוב עוד כמה דקות.", ""
 
-    await _log_action("claude_call", {"message": user_message[:100], "is_group": is_group}, "started")
-    await _save_history("user", user_message)
+    await _log_action("claude_call", {"message": user_message[:100], "is_group": is_group, "channel": channel}, "started")
+    await _save_history("user", user_message, channel=channel)
 
     history = await _get_history(limit=10)
     messages = [{"role": h["role"], "content": h["content"]} for h in history]
@@ -540,6 +541,16 @@ async def process_message(
     if is_group:
         system = _SYSTEM_GROUP.format(bot_name=settings.bot_name, current_datetime=current_dt)
         tools = _TOOLS_GROUP
+    elif channel != "whatsapp":
+        # Web / Telegram: same DM capabilities, note the channel
+        from services.memory_service import load_context_for_message
+        memory_context = await load_context_for_message(user_message)
+        system = _SYSTEM_DM.format(
+            bot_name=settings.bot_name,
+            current_datetime=current_dt,
+            memory_context=memory_context,
+        ) + f"\nערוץ נוכחי: {channel}"
+        tools = _TOOLS_DM
     else:
         # Load relevant long-term memories for context
         from services.memory_service import load_context_for_message
@@ -566,7 +577,7 @@ async def process_message(
 
             if response.stop_reason == "end_turn":
                 text = "".join(b.text for b in response.content if hasattr(b, "text"))
-                await _save_history("assistant", text)
+                await _save_history("assistant", text, channel=channel)
                 return text, ",".join(tools_used)
 
             if response.stop_reason == "tool_use":
@@ -588,7 +599,7 @@ async def process_message(
                     result, needs_approval = await _execute_tool(b.name, b.input, is_group)
                     if needs_approval:
                         await _create_pending_action(b.name, b.input)
-                        await _save_history("assistant", result)
+                        await _save_history("assistant", result, channel=channel)
                         return result, ",".join(tools_used)
                     tool_results.append(
                         {"type": "tool_result", "tool_use_id": b.id, "content": result}
