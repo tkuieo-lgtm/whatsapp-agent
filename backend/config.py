@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     tavily_api_key: Optional[str] = None
     groq_api_key: Optional[str] = None
     # Web chat
-    chat_password: str = "changeme"
+    web_chat_password: str = "changeme"
     # Telegram
     telegram_bot_token: Optional[str] = None
     owner_telegram_id: Optional[str] = None

@@ -136,7 +136,7 @@ class ChatMessage(BaseModel):
 
 @router.post("/send")
 async def chat_send(body: ChatMessage):
-    if body.password != settings.chat_password:
+    if body.password != settings.web_chat_password:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     from services.claude_service import process_message
