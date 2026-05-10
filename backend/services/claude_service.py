@@ -236,8 +236,10 @@ _SYSTEM_DM = """\
 
 **יומן Google Calendar**
 - לראות אירועים: היום, מחר, השבוע
+  כל אירוע מוצג עם [id:XXXXX] — זהו ה-event_id לשימוש בפעולות כתיבה
 - ליצור אירוע (עם אישור)
-- למחוק אירוע (עם אישור)
+- למחוק / לערוך / להעביר אירוע: השתמש תמיד ב-id מהשדה [id:...]
+  לעולם אל תשתמש בכותרת האירוע כ-event_id
 
 **מיילים Gmail**
 - לראות מיילים לא נקראים (ללא ניוזלטרים)
@@ -447,8 +449,9 @@ async def _execute_tool(name: str, inp: Dict, is_group: bool = False, channel: s
                 return "אין אירועים ביומן להיום.", False
             lines = ["📅 אירועים להיום:"]
             for ev in events:
+                logger.info(f"[CALENDAR] event.id={ev['id']!r} event.summary={ev['title']!r}")
                 loc = f" ({ev['location']})" if ev.get("location") else ""
-                lines.append(f"• {ev['date']} {ev['time']} — {ev['title']}{loc}")
+                lines.append(f"• {ev['date']} {ev['time']} — {ev['title']}{loc}  [id:{ev['id']}]")
             return "\n".join(lines), False
 
         if name == "get_tomorrows_events":
@@ -457,8 +460,9 @@ async def _execute_tool(name: str, inp: Dict, is_group: bool = False, channel: s
                 return "אין אירועים ביומן למחר.", False
             lines = ["📅 אירועים למחר:"]
             for ev in events:
+                logger.info(f"[CALENDAR] event.id={ev['id']!r} event.summary={ev['title']!r}")
                 loc = f" ({ev['location']})" if ev.get("location") else ""
-                lines.append(f"• {ev['date']} {ev['time']} — {ev['title']}{loc}")
+                lines.append(f"• {ev['date']} {ev['time']} — {ev['title']}{loc}  [id:{ev['id']}]")
             return "\n".join(lines), False
 
         if name == "get_weeks_events":
@@ -467,8 +471,9 @@ async def _execute_tool(name: str, inp: Dict, is_group: bool = False, channel: s
                 return "אין אירועים ביומן השבוע.", False
             lines = ["📅 אירועים השבוע:"]
             for ev in events:
+                logger.info(f"[CALENDAR] event.id={ev['id']!r} event.summary={ev['title']!r}")
                 loc = f" ({ev['location']})" if ev.get("location") else ""
-                lines.append(f"• {ev['date']} {ev['time']} — {ev['title']}{loc}")
+                lines.append(f"• {ev['date']} {ev['time']} — {ev['title']}{loc}  [id:{ev['id']}]")
             return "\n".join(lines), False
 
         if name == "web_search":
@@ -568,6 +573,16 @@ async def _execute_tool(name: str, inp: Dict, is_group: bool = False, channel: s
         return f"❌ שגיאה בביצוע {name}: {e}", False
 
 
+def _assert_real_event_id(event_id: str, action: str) -> None:
+    """Raise a clear error if event_id looks like a title instead of a real Google Calendar ID."""
+    # Real IDs: alphanumeric, ~26 chars, no spaces or Hebrew chars
+    if " " in event_id or any("֐" <= c <= "׿" for c in event_id):
+        raise ValueError(
+            f"{action}: event_id={event_id!r} looks like a title, not a real Google Calendar ID. "
+            "Use the id from [id:...] in the event listing."
+        )
+
+
 async def execute_approved_action(action_type: str, payload: Dict) -> str:
     try:
         if action_type == "send_email":
@@ -587,15 +602,20 @@ async def execute_approved_action(action_type: str, payload: Dict) -> str:
             return f"✅ האירוע '{payload['title']}' נוצר ביומן"
 
         if action_type == "delete_calendar_event":
+            eid = payload["event_id"]
+            _assert_real_event_id(eid, "delete_calendar_event")
+            logger.info(f"[CALENDAR] delete event_id={eid!r}")
             await calendar_service.delete_event(
-                payload["event_id"],
-                calendar_id=payload.get("calendar_id", "primary"),
+                eid, calendar_id=payload.get("calendar_id", "primary"),
             )
             return "✅ האירוע נמחק מהיומן"
 
         if action_type == "update_calendar_event":
+            eid = payload["event_id"]
+            _assert_real_event_id(eid, "update_calendar_event")
+            logger.info(f"[CALENDAR] update event_id={eid!r}")
             await calendar_service.update_event(
-                event_id=payload["event_id"],
+                event_id=eid,
                 calendar_id=payload.get("calendar_id", "primary"),
                 title=payload.get("title"),
                 date=payload.get("date"),
@@ -610,6 +630,7 @@ async def execute_approved_action(action_type: str, payload: Dict) -> str:
             eid = payload["event_id"]
             src = payload.get("source_calendar_id", "primary")
             dst = payload["destination_calendar_id"]
+            _assert_real_event_id(eid, "move_calendar_event")
             logger.info(f"[CALENDAR] Moving event_id={eid!r} from {src!r} to {dst!r}")
             await calendar_service.move_event(
                 event_id=eid,
