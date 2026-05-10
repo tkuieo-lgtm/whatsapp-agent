@@ -21,35 +21,47 @@ def _ext(mime_type: str) -> str:
 
 
 async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str:
-    """
-    Transcribe a base64-encoded voice note using Groq Whisper.
-    Passes (filename, bytes) tuple directly — no temp file needed.
-    """
+    """Transcribe a base64-encoded voice note using Groq Whisper."""
+    logger.info(f"[VOICE] Step 0: transcribe_voice called, mime={mime_type}")
+
     if not settings.groq_api_key:
+        logger.error("[VOICE] GROQ_API_KEY is not set!")
         raise ValueError("GROQ_API_KEY is not configured.")
 
-    from groq import Groq
-    client = Groq(api_key=settings.groq_api_key)
-
-    ext = _ext(mime_type)
-    audio_bytes = base64.b64decode(audio_data)
-
-    logger.info(f"[VOICE] Received {len(audio_bytes)} bytes, mime={mime_type}, ext=.{ext}")
-    logger.info(f"[VOICE] GROQ_API_KEY exists: {bool(settings.groq_api_key)}")
-    logger.info("[VOICE] Calling Groq Whisper (bytes tuple, no temp file)...")
+    logger.info(f"[VOICE] Step 0b: GROQ_API_KEY present, len={len(settings.groq_api_key)}, prefix={settings.groq_api_key[:10]}...")
 
     try:
-        # Pass (filename, bytes) tuple — avoids all temp-file / fd issues
+        audio_bytes = base64.b64decode(audio_data)
+    except Exception as e:
+        logger.error(f"[VOICE] Step 1: base64 decode FAILED: {e}")
+        raise
+
+    logger.info(f"[VOICE] Step 1: received audio bytes: {len(audio_bytes)}")
+
+    ext = _ext(mime_type)
+    filename = f"audio.{ext}"
+    logger.info(f"[VOICE] Step 1b: will send as filename={filename!r}")
+
+    try:
+        from groq import Groq
+        client = Groq(api_key=settings.groq_api_key)
+        logger.info("[VOICE] Step 2: Groq client created OK")
+    except Exception as e:
+        logger.error(f"[VOICE] Step 2: Groq client creation FAILED: {type(e).__name__}: {e}")
+        raise
+
+    logger.info("[VOICE] Step 2b: about to call Groq...")
+    try:
         transcription = client.audio.transcriptions.create(
             model="whisper-large-v3",
-            file=(f"audio.{ext}", audio_bytes),
+            file=(filename, audio_bytes),
             language="he",
         )
         result = transcription.text.strip()
-        logger.info(f"[VOICE] Transcription: \"{result}\"")
+        logger.info(f"[VOICE] Step 3: Groq response: {result!r}")
         return result
 
     except Exception as e:
-        logger.error(f"[VOICE] Error: {type(e).__name__}: {e}")
+        logger.error(f"[VOICE] Step 3: Groq API call FAILED: {type(e).__name__}: {e}")
         logger.error(f"[VOICE] Full traceback:\n{traceback.format_exc()}")
         raise
