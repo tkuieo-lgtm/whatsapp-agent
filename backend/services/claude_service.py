@@ -77,7 +77,7 @@ _TOOLS_DM: List[Dict] = [
     },
     {
         "name": "create_calendar_event",
-        "description": "צור אירוע ביומן — דורש אישור",
+        "description": "צור אירוע ביומן — דורש אישור. בחר calendar_id מהרשימה שב-system prompt לפי הקשר",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -87,6 +87,7 @@ _TOOLS_DM: List[Dict] = [
                 "end_time": {"type": "string", "description": "HH:MM"},
                 "description": {"type": "string"},
                 "location": {"type": "string"},
+                "calendar_id": {"type": "string", "description": "'primary' לברירת מחדל, או id ספציפי מהרשימה"},
             },
             "required": ["title", "date", "start_time", "end_time"],
         },
@@ -229,17 +230,15 @@ _SYSTEM_DM = """\
 
 ## כללי תגובה — קול לעומת טקסט
 
-**שלח קול כשמתאים:**
-- המשתמש שלח הודעה קולית → תמיד קול
-- תשובה קצרה ושיחתית (עד 30 מילה) → קול
-- ברכות, אישורים, תזכורות → קול
+**ברירת מחדל: קול.** אם המשתמש לא ביקש טקסט מפורשות — שלח קול.
 
-**שלח טקסט כשיש:**
-- רשימות, לו"ז, נתונים מסודרים → טקסט
-- מיילים, כתובות, קישורים → טקסט
-- תשובה ארוכה מ-50 מילה → טקסט
+**השתמש בטקסט רק כאשר:**
+- התשובה ארוכה מאוד (מעל 120 מילה)
+- יש נתונים מסודרים שחובה לראות: לו"ז עם זמנים, רשימת מיילים, קישורים
+- המשתמש ביקש מפורשות "תכתוב", "בטקסט"
 
 **חשוב ביותר:** קול **או** טקסט — לעולם לא שניהם באותה תגובה.
+ב-WhatsApp: voice note. בWeb: קובץ אודיו שניגן בדפדפן. בשניהם — לא טקסט נוסף.
 
 ## פעולות שדורשות אישור
 שליחת מייל, יצירת/מחיקת אירוע, יצירת חוק מייל —
@@ -255,6 +254,7 @@ _SYSTEM_DM = """\
 אני אותו {bot_name} בכל ערוץ — אותו מוח, אותה זיכרון.
 
 תאריך ושעה נוכחיים (ישראל): {current_datetime}
+{calendar_list}
 {memory_context}"""
 
 _SYSTEM_GROUP = """\
@@ -479,6 +479,9 @@ async def _execute_tool(name: str, inp: Dict, is_group: bool = False, channel: s
                     msg += f"*מיקום:* {inp['location']}\n"
                 if inp.get("description"):
                     msg += f"*תיאור:* {inp['description']}\n"
+                cal_id = inp.get("calendar_id", "primary")
+                if cal_id and cal_id != "primary":
+                    msg += f"*יומן:* {cal_id}\n"
                 msg += "\n"
             elif name == "delete_calendar_event":
                 msg = f"🗑️ *מחיקת אירוע* (ID: {inp['event_id']})\n\n"
@@ -522,8 +525,9 @@ async def execute_approved_action(action_type: str, payload: Dict) -> str:
                 title=payload["title"], date=payload["date"],
                 start_time=payload["start_time"], end_time=payload["end_time"],
                 description=payload.get("description", ""), location=payload.get("location", ""),
+                calendar_id=payload.get("calendar_id", "primary"),
             )
-            return f"✅ האירוע '{payload['title']}' נוצר"
+            return f"✅ האירוע '{payload['title']}' נוצר ביומן"
 
         if action_type == "delete_calendar_event":
             await calendar_service.delete_event(payload["event_id"])
@@ -573,22 +577,27 @@ async def process_message(
         system = _SYSTEM_GROUP.format(bot_name=settings.bot_name, current_datetime=current_dt)
         tools = _TOOLS_GROUP
     elif channel != "whatsapp":
-        # Web / Telegram: same DM capabilities, note the channel
         from services.memory_service import load_context_for_message
+        from services.calendar_service import get_calendar_list_for_prompt
         memory_context = await load_context_for_message(user_message)
+        calendar_list = await get_calendar_list_for_prompt()
         system = _SYSTEM_DM.format(
             bot_name=settings.bot_name,
             current_datetime=current_dt,
+            calendar_list=calendar_list,
             memory_context=memory_context,
         ) + f"\nערוץ נוכחי: {channel}"
         tools = _TOOLS_DM
     else:
         # Load relevant long-term memories for context
         from services.memory_service import load_context_for_message
+        from services.calendar_service import get_calendar_list_for_prompt
         memory_context = await load_context_for_message(user_message)
+        calendar_list = await get_calendar_list_for_prompt()
         system = _SYSTEM_DM.format(
             bot_name=settings.bot_name,
             current_datetime=current_dt,
+            calendar_list=calendar_list,
             memory_context=memory_context,
         )
         tools = _TOOLS_DM

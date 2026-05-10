@@ -137,13 +137,24 @@ def should_use_voice(
     was_voice_input: bool = False,
     context_type: str = "text",
 ) -> bool:
-    if was_voice_input:
+    """
+    Default is VOICE unless the response is clearly text-optimised.
+    User must explicitly request text to get a text-only reply.
+    """
+    # Always voice for these contexts
+    if was_voice_input or context_type in ("morning_briefing", "reminder", "alert"):
         return True
-    if context_type in ("morning_briefing", "reminder", "alert"):
-        return True
+
     word_count = len(text.split())
-    has_list = "\n•" in text or "\n-" in text or text.count("\n") > 4
-    has_structured = any(c in text for c in ["📅", "📧", "🔍", "```", "http"])
-    if word_count > 100 or has_list or has_structured:
+    # Switch to text for: long structured content, email/calendar data, code
+    has_heavy_structure = (
+        (text.count("\n") > 5 and word_count > 40)
+        or text.count("\n•") > 2
+        or text.count("\n-") > 3
+    )
+    has_data_fields = any(c in text for c in ["📧", "🔍", "```", "http", "ID:", "id="])
+
+    if word_count > 120 or has_heavy_structure or has_data_fields:
         return False
-    return word_count <= 50
+
+    return True  # default: voice
