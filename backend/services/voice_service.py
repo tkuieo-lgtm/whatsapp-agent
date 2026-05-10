@@ -60,7 +60,9 @@ async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str
         return result_text
 
     except Exception as e:
+        import traceback
         logger.error(f"[VOICE] Error: {type(e).__name__}: {str(e)}")
+        logger.error(f"[VOICE] Full error:\n{traceback.format_exc()}")
         raise
     finally:
         if tmp_path and os.path.exists(tmp_path):

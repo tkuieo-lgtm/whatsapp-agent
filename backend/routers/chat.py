@@ -103,7 +103,7 @@ async function login() {{
 // ---------------------------------------------------------------------------
 // Message bubbles
 // ---------------------------------------------------------------------------
-function addBubble(role, text, audioB64) {{
+function addBubble(role, text, audioB64, autoSpeak) {{
   const wrap = document.createElement('div');
   wrap.className = `wrap ${{role}}`;
   const b = document.createElement('div');
@@ -125,6 +125,7 @@ function addBubble(role, text, audioB64) {{
     if (audioB64) {{
       speakBtn.dataset.audio = audioB64;
       speakBtn.onclick = () => playAudio(speakBtn.dataset.audio);
+      if (autoSpeak) playAudio(audioB64);  // auto-play on explicit "תקריא" request
     }} else {{
       speakBtn.onclick = () => requestAudio(text, speakBtn);
     }}
@@ -199,10 +200,17 @@ async function toggleMic() {{
     mediaRecorder.stop();
     return;
   }}
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
+    addBubble('bot', '❌ הדפדפן שלך לא תומך בהקלטה. נסה Chrome או Firefox.');
+    return;
+  }}
   try {{
     recStream = await navigator.mediaDevices.getUserMedia({{audio: true}});
   }} catch(e) {{
-    addBubble('bot', 'לא ניתן לגשת למיקרופון. ודא שנתת הרשאה.');
+    const msg = e.name === 'NotAllowedError'
+      ? '❌ הרשאת מיקרופון נדחתה. לחץ על סמל המנעול בסרגל הכתובת ואפשר מיקרופון.'
+      : `❌ לא ניתן לפתוח מיקרופון: ${{e.message}}`;
+    addBubble('bot', msg);
     return;
   }}
 
@@ -263,7 +271,7 @@ async function doSend(payload) {{
     typing.remove();
     const d = await r.json();
     const text = d.transcription ? `🎤 ${{d.transcription}}\n\n${{d.response}}` : (d.response || d.error || 'שגיאה');
-    addBubble('bot', text, d.audio);
+    addBubble('bot', text, d.audio, d.auto_speak);
   }} catch(e) {{
     typing.remove();
     addBubble('bot', 'שגיאת תקשורת');
@@ -325,7 +333,7 @@ async def chat_send(body: ChatMessage):
     # --- Server-side dedup (prevents double-send from rapid retries) ---
     key = hashlib.md5(f"{body.password}:{text}".encode()).hexdigest()
     now = time.time()
-    _recent.update({k: v for k, v in _recent.items() if now - v[1] < 10})  # expire old
+    _recent.update({k: v for k, v in _recent.items() if now - v[1] < 10})
     if key in _recent:
         logger.info(f"[CHAT] Dedup hit for: {text[:40]}")
         return _recent[key][0]
@@ -339,16 +347,22 @@ async def chat_send(body: ChatMessage):
         _recent[key] = (result, now)
         return result
 
+    # Detect explicit speak request ("תקריא לי", "תגיד לי" etc.)
+    _SPEAK_WORDS = ["תקריא", "תגיד", "הקרא", "read aloud", "speak"]
+    speak_requested = any(kw in text for kw in _SPEAK_WORDS)
+
     # --- Process ---
     response_text, _ = await process_message(text, channel="web")
 
-    # --- TTS only when user sent voice (mirrors voice with voice) ---
+    # --- TTS when: user sent voice OR explicitly asked to read aloud ---
     response_audio = None
-    if was_voice:
+    auto_speak = False
+    if was_voice or speak_requested:
         try:
             from services.tts_service import text_to_speech
             audio_bytes = await text_to_speech(response_text)
             response_audio = base64.b64encode(audio_bytes).decode()
+            auto_speak = speak_requested   # auto-play only for explicit "תקריא" requests
         except Exception as e:
             logger.warning(f"[CHAT] TTS failed: {e}")
 
@@ -356,7 +370,9 @@ async def chat_send(body: ChatMessage):
     if transcription:
         result["transcription"] = transcription
     if response_audio:
-        result["audio"] = response_audio   # pre-loaded audio for the 🔊 button
+        result["audio"] = response_audio
+    if auto_speak:
+        result["auto_speak"] = True   # tells frontend to play immediately
     _recent[key] = (result, now)
     return result
 
