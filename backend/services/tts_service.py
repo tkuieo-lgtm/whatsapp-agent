@@ -91,23 +91,30 @@ async def text_to_speech(text: str) -> bytes:
     logger.info(f"[TTS] Generating with edge-tts ({VOICE}) — {len(clean)} chars: {clean[:60]!r}…")
 
     mp3_data = b""
+    engine_used = "edge-tts"
     try:
         import edge_tts
+        logger.info(f"[TTS] edge-tts voice={VOICE}")
         communicate = edge_tts.Communicate(clean, voice=VOICE)
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
                 mp3_data += chunk["data"]
 
         if not mp3_data:
-            raise RuntimeError("edge-tts returned empty audio stream")
+            raise RuntimeError("edge-tts returned empty audio stream (0 bytes)")
 
-        logger.info(f"[TTS] Generated {len(mp3_data)} bytes from edge-tts")
+        logger.info(f"[TTS] edge-tts produced {len(mp3_data)} mp3 bytes")
 
     except Exception as e:
-        logger.warning(f"[TTS] edge-tts failed ({type(e).__name__}: {e}) — falling back to gTTS")
+        import traceback
+        logger.error(f"[TTS] ⚠️  edge-tts FAILED: {type(e).__name__}: {e}")
+        logger.error(f"[TTS] Falling back to gTTS (ROBOTIC voice)\n{traceback.format_exc()}")
+        engine_used = "gTTS-fallback"
         result = await _gtts_tts(clean)
-        logger.info(f"[TTS] gTTS fallback: {len(result)} bytes")
+        logger.info(f"[TTS] gTTS produced {len(result)} ogg bytes")
         return result
+
+    logger.info(f"[TTS] Engine used: {engine_used}")
 
     # Convert mp3 → ogg/opus
     mp3_fd, mp3_path = tempfile.mkstemp(suffix=".mp3")

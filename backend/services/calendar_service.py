@@ -218,14 +218,91 @@ async def create_event(
         raise
 
 
-async def delete_event(event_id: str) -> None:
+async def delete_event(event_id: str, calendar_id: str = "primary") -> None:
+    """Delete an event by ID from the specified calendar."""
     creds = await get_credentials()
     if not creds:
         raise ValueError("Google credentials not configured.")
 
+    logger.info(f"[CALENDAR] Deleting event id={event_id!r} from calendar={calendar_id!r}")
     try:
         service = build("calendar", "v3", credentials=creds)
-        service.events().delete(calendarId="primary", eventId=event_id).execute()
+        service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+        logger.info(f"[CALENDAR] Event {event_id!r} deleted")
     except HttpError as e:
-        logger.error(f"[CALENDAR] API error deleting event: {e}")
+        logger.error(f"[CALENDAR] Delete error: {type(e).__name__}: {e}")
+        raise
+
+
+async def update_event(
+    event_id: str,
+    calendar_id: str = "primary",
+    title: Optional[str] = None,
+    date: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    description: Optional[str] = None,
+    location: Optional[str] = None,
+) -> Dict:
+    """Patch an existing calendar event (only supplied fields are changed)."""
+    creds = await get_credentials()
+    if not creds:
+        raise ValueError("Google credentials not configured.")
+
+    patch: Dict = {}
+    if title:
+        patch["summary"] = title
+    if description is not None:
+        patch["description"] = description
+    if location is not None:
+        patch["location"] = location
+    if date and start_time:
+        patch["start"] = {"dateTime": f"{date}T{start_time}:00", "timeZone": settings.timezone}
+    if date and end_time:
+        patch["end"] = {"dateTime": f"{date}T{end_time}:00", "timeZone": settings.timezone}
+
+    if not patch:
+        return {"id": event_id, "note": "nothing to update"}
+
+    logger.info(f"[CALENDAR] Updating event id={event_id!r} patch={patch}")
+    try:
+        service = build("calendar", "v3", credentials=creds)
+        updated = service.events().patch(
+            calendarId=calendar_id, eventId=event_id, body=patch
+        ).execute()
+        logger.info(f"[CALENDAR] Event updated: id={updated['id']}")
+        return {"id": updated["id"], "title": updated.get("summary", "")}
+    except HttpError as e:
+        logger.error(f"[CALENDAR] Update error: {type(e).__name__}: {e}")
+        raise
+
+
+async def move_event(
+    event_id: str,
+    source_calendar_id: str = "primary",
+    destination_calendar_id: str = "",
+) -> Dict:
+    """Move an event to a different calendar using events().move()."""
+    if not destination_calendar_id:
+        raise ValueError("destination_calendar_id is required")
+
+    creds = await get_credentials()
+    if not creds:
+        raise ValueError("Google credentials not configured.")
+
+    logger.info(
+        f"[CALENDAR] Moving event {event_id!r} from {source_calendar_id!r} "
+        f"to {destination_calendar_id!r}"
+    )
+    try:
+        service = build("calendar", "v3", credentials=creds)
+        moved = service.events().move(
+            calendarId=source_calendar_id,
+            eventId=event_id,
+            destination=destination_calendar_id,
+        ).execute()
+        logger.info(f"[CALENDAR] Event moved: id={moved['id']}")
+        return {"id": moved["id"], "title": moved.get("summary", "")}
+    except HttpError as e:
+        logger.error(f"[CALENDAR] Move error: {type(e).__name__}: {e}")
         raise

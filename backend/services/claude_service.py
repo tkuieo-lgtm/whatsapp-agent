@@ -97,8 +97,42 @@ _TOOLS_DM: List[Dict] = [
         "description": "מחק אירוע מהיומן — דורש אישור",
         "input_schema": {
             "type": "object",
-            "properties": {"event_id": {"type": "string"}},
+            "properties": {
+                "event_id": {"type": "string"},
+                "calendar_id": {"type": "string", "description": "מזהה היומן, ברירת מחדל: primary"},
+            },
             "required": ["event_id"],
+        },
+    },
+    {
+        "name": "update_calendar_event",
+        "description": "ערוך פרטים של אירוע קיים ביומן — דורש אישור",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "calendar_id": {"type": "string"},
+                "title": {"type": "string"},
+                "date": {"type": "string", "description": "YYYY-MM-DD"},
+                "start_time": {"type": "string", "description": "HH:MM"},
+                "end_time": {"type": "string", "description": "HH:MM"},
+                "description": {"type": "string"},
+                "location": {"type": "string"},
+            },
+            "required": ["event_id"],
+        },
+    },
+    {
+        "name": "move_calendar_event",
+        "description": "העבר אירוע מיומן אחד לאחר — דורש אישור",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string"},
+                "source_calendar_id": {"type": "string", "description": "יומן מקור, ברירת מחדל: primary"},
+                "destination_calendar_id": {"type": "string", "description": "יומן יעד"},
+            },
+            "required": ["event_id", "destination_calendar_id"],
         },
     },
     {
@@ -181,7 +215,10 @@ _TOOLS_GROUP: List[Dict] = [
 ]
 
 # Actions requiring explicit user approval
-_WRITE_TOOLS = {"send_email", "create_calendar_event", "delete_calendar_event", "create_email_rule"}
+_WRITE_TOOLS = {
+    "send_email", "create_calendar_event", "delete_calendar_event",
+    "update_calendar_event", "move_calendar_event", "create_email_rule",
+}
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -484,7 +521,27 @@ async def _execute_tool(name: str, inp: Dict, is_group: bool = False, channel: s
                     msg += f"*יומן:* {cal_id}\n"
                 msg += "\n"
             elif name == "delete_calendar_event":
-                msg = f"🗑️ *מחיקת אירוע* (ID: {inp['event_id']})\n\n"
+                cal = inp.get("calendar_id", "primary")
+                msg = f"🗑️ *מחיקת אירוע* (ID: {inp['event_id']})\nיומן: {cal}\n\n"
+            elif name == "update_calendar_event":
+                msg = f"✏️ *עריכת אירוע* (ID: {inp['event_id']})\n"
+                if inp.get("title"):
+                    msg += f"*כותרת חדשה:* {inp['title']}\n"
+                if inp.get("date"):
+                    msg += f"*תאריך:* {inp['date']}\n"
+                if inp.get("start_time"):
+                    msg += f"*שעות:* {inp['start_time']} — {inp.get('end_time','')}\n"
+                if inp.get("location"):
+                    msg += f"*מיקום:* {inp['location']}\n"
+                msg += "\n"
+            elif name == "move_calendar_event":
+                src = inp.get("source_calendar_id", "primary")
+                dst = inp["destination_calendar_id"]
+                msg = (
+                    f"🔀 *העברת אירוע*\n"
+                    f"מ: {src} → ל: {dst}\n"
+                    f"ID: {inp['event_id']}\n\n"
+                )
             elif name == "create_email_rule":
                 cond = {k: inp[k] for k in ("from_contains", "subject_contains") if inp.get(k)}
                 act = {k: inp[k] for k in ("move_to_folder", "mark_as_read") if inp.get(k) is not None}
@@ -530,8 +587,32 @@ async def execute_approved_action(action_type: str, payload: Dict) -> str:
             return f"✅ האירוע '{payload['title']}' נוצר ביומן"
 
         if action_type == "delete_calendar_event":
-            await calendar_service.delete_event(payload["event_id"])
-            return "✅ האירוע נמחק"
+            await calendar_service.delete_event(
+                payload["event_id"],
+                calendar_id=payload.get("calendar_id", "primary"),
+            )
+            return "✅ האירוע נמחק מהיומן"
+
+        if action_type == "update_calendar_event":
+            await calendar_service.update_event(
+                event_id=payload["event_id"],
+                calendar_id=payload.get("calendar_id", "primary"),
+                title=payload.get("title"),
+                date=payload.get("date"),
+                start_time=payload.get("start_time"),
+                end_time=payload.get("end_time"),
+                description=payload.get("description"),
+                location=payload.get("location"),
+            )
+            return f"✅ האירוע עודכן"
+
+        if action_type == "move_calendar_event":
+            await calendar_service.move_event(
+                event_id=payload["event_id"],
+                source_calendar_id=payload.get("source_calendar_id", "primary"),
+                destination_calendar_id=payload["destination_calendar_id"],
+            )
+            return f"✅ האירוע הועבר ל-{payload['destination_calendar_id']}"
 
         if action_type == "create_email_rule":
             conditions = {k: payload[k] for k in ("from_contains", "subject_contains") if payload.get(k)}

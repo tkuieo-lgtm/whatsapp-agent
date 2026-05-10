@@ -67,6 +67,16 @@ async def get_credentials() -> Optional[Credentials]:
         f"[GMAIL] Creds loaded — valid={creds.valid} expired={creds.expired} "
         f"has_refresh={bool(creds.refresh_token)} scopes={creds.scopes}"
     )
+    # Warn about missing write scopes (causes silent permission failures)
+    _required = {
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/calendar.events",
+    }
+    _actual = set(creds.scopes or [])
+    _missing = _required - _actual
+    if _missing:
+        logger.error(f"[GMAIL] ⚠️  Missing scopes: {_missing}")
+        logger.error(f"[GMAIL] Re-auth required at: {_settings.backend_url}/auth/google")
 
     if (creds.expired or not creds.valid) and creds.refresh_token:
         logger.info("[GMAIL] Refreshing token…")

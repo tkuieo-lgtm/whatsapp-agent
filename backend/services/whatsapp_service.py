@@ -37,7 +37,7 @@ async def send_voice_message(text: str, chat_id: Optional[str] = None, context_t
         target = chat_id or f"{settings.owner_phone}@c.us"
         payload: dict = {"to": target, "audio": audio_b64, "mime": "audio/ogg; codecs=opus"}
 
-        logger.info(f"[TTS] Sending to WhatsApp: {len(audio_bytes)} bytes → {settings.whatsapp_service_url}/send-voice")
+        logger.info(f"[TTS] Sending to WhatsApp: {len(audio_bytes)} bytes (audio/ogg; codecs=opus) → /send-voice")
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{settings.whatsapp_service_url}/send-voice", json=payload
