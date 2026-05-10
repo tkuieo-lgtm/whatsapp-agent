@@ -61,8 +61,9 @@ def prepare_for_speech(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def _gtts_tts(text: str) -> bytes:
+    """gTTS fallback: also uses ffmpeg (not pydub) for mp3→ogg conversion."""
+    import subprocess
     from gtts import gTTS
-    from pydub import AudioSegment
 
     mp3_fd, mp3_path = tempfile.mkstemp(suffix=".mp3")
     ogg_fd, ogg_path = tempfile.mkstemp(suffix=".ogg")
@@ -70,7 +71,12 @@ async def _gtts_tts(text: str) -> bytes:
     os.close(ogg_fd)
     try:
         gTTS(text=text, lang="iw").save(mp3_path)
-        AudioSegment.from_mp3(mp3_path).export(ogg_path, format="ogg", codec="libopus")
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-i", mp3_path, "-c:a", "libopus", "-b:a", "32k", ogg_path],
+            capture_output=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg (gtts) failed: {proc.stderr.decode()[:200]}")
         with open(ogg_path, "rb") as f:
             return f.read()
     finally:
@@ -84,8 +90,8 @@ async def _gtts_tts(text: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 async def text_to_speech(text: str) -> bytes:
-    """Convert text to OGG/Opus bytes. Tries edge-tts first, falls back to gTTS."""
-    from pydub import AudioSegment
+    """Convert text to OGG/Opus bytes via edge-tts + ffmpeg. Falls back to gTTS."""
+    import subprocess  # ffmpeg used directly — no pydub needed
 
     clean = prepare_for_speech(text)
     logger.info(f"[TTS] Generating with edge-tts ({VOICE}) — {len(clean)} chars: {clean[:60]!r}…")
@@ -116,7 +122,9 @@ async def text_to_speech(text: str) -> bytes:
 
     logger.info(f"[TTS] Engine used: {engine_used}")
 
-    # Convert mp3 → ogg/opus
+    # Convert mp3 → ogg/opus using ffmpeg subprocess directly
+    # (avoids pydub/audioop which breaks on Python 3.13+)
+    import subprocess
     mp3_fd, mp3_path = tempfile.mkstemp(suffix=".mp3")
     ogg_fd, ogg_path = tempfile.mkstemp(suffix=".ogg")
     os.close(mp3_fd)
@@ -124,10 +132,15 @@ async def text_to_speech(text: str) -> bytes:
     try:
         with open(mp3_path, "wb") as f:
             f.write(mp3_data)
-        AudioSegment.from_mp3(mp3_path).export(ogg_path, format="ogg", codec="libopus")
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-i", mp3_path, "-c:a", "libopus", "-b:a", "32k", ogg_path],
+            capture_output=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed: {proc.stderr.decode()[:300]}")
         with open(ogg_path, "rb") as f:
             result = f.read()
-        logger.info(f"[TTS] Converted to ogg/opus: {len(result)} bytes")
+        logger.info(f"[TTS] Converted to ogg/opus via ffmpeg: {len(result)} bytes")
         return result
     finally:
         for p in (mp3_path, ogg_path):
