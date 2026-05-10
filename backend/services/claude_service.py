@@ -790,14 +790,14 @@ async def check_and_handle_approval(
         result = await session.execute(
             select(PendingAction)
             .where(PendingAction.status == "pending")
-            .where(PendingAction.channel == channel)   # channel isolation
+            # No channel filter — same owner can approve from any channel
             .order_by(PendingAction.created_at.desc())
             .limit(1)
         )
         pending = result.scalar_one_or_none()
 
     if not pending:
-        logger.info(f"[PENDING] No pending action found for channel={channel!r} (text={text!r})")
+        logger.info(f"[PENDING] No pending action found (channel={channel!r}, text={text!r})")
         return None
 
     logger.info(f"[PENDING] Found pending action: id={pending.id} type={pending.type!r} channel={pending.channel!r}")
