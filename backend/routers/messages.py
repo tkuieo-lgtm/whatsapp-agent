@@ -92,6 +92,7 @@ async def _handle_message(msg: IncomingMessage) -> None:
 
         # Decide voice vs text
         use_voice = should_use_voice(response_text, was_voice_input=was_voice_input)
+        logger.info(f"[VOICE] use_voice={use_voice} was_voice={was_voice_input} words={len(response_text.split())} is_group={msg.is_group}")
         await _log_voice_preference("message", used_voice=use_voice)
 
         if use_voice and not msg.is_group:

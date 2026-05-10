@@ -771,7 +771,10 @@ async def check_and_handle_approval(
         pending = result.scalar_one_or_none()
 
     if not pending:
+        logger.info(f"[PENDING] No pending action found for channel={channel!r} (text={text!r})")
         return None
+
+    logger.info(f"[PENDING] Found pending action: id={pending.id} type={pending.type!r} channel={pending.channel!r}")
 
     if datetime.now(timezone.utc) > pending.expires_at:
         async with AsyncSessionLocal() as session:
@@ -782,7 +785,8 @@ async def check_and_handle_approval(
         return "⏰ הפעולה פגה. אנא בקש שוב.", ""
 
     if lower in _YES_WORDS:
-        # Atomic delete — only proceeds if still "pending", prevents double execution
+        logger.info(f"[PENDING] Attempting to claim action id={pending.id} type={pending.type!r} channel={channel!r}")
+        # Atomic delete — positional row access avoids `row.type` built-in clash
         async with AsyncSessionLocal() as session:
             del_result = await session.execute(
                 sa_delete(PendingAction)
@@ -793,9 +797,12 @@ async def check_and_handle_approval(
             row = del_result.first()
             if not row:
                 await session.commit()
+                logger.warning(f"[PENDING] Action {pending.id} already executed (DELETE returned nothing)")
                 return "הפעולה כבר בוצעה.", ""
-            action_type, payload = row.type, row.payload
+            action_type = row[0]   # positional — avoids row.type built-in conflict
+            payload = row[1]
             await session.commit()
+        logger.info(f"[PENDING] Claimed: type={action_type!r} payload_keys={list(payload.keys()) if payload else []}")
 
         response = await execute_approved_action(action_type, payload)
 
@@ -803,6 +810,7 @@ async def check_and_handle_approval(
             session.add(ActionLog(action_type=action_type, details=payload, status="approved"))
             await session.commit()
 
+        logger.info(f"[PENDING] execute_approved_action returned: {response[:80]!r}")
         await _save_history("assistant", response, channel=channel)
         return response, action_type
 
