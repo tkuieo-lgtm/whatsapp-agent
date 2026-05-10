@@ -152,6 +152,7 @@ async def create_event(
     if not creds:
         raise ValueError("Google credentials not configured.")
 
+    logger.info(f"[CALENDAR] Creating event: {title!r} on {date} {start_time}-{end_time}")
     try:
         service = build("calendar", "v3", credentials=creds)
         body = {
@@ -162,9 +163,10 @@ async def create_event(
             "end": {"dateTime": f"{date}T{end_time}:00", "timeZone": settings.timezone},
         }
         created = service.events().insert(calendarId="primary", body=body).execute()
+        logger.info(f"[CALENDAR] Event created: id={created['id']} link={created.get('htmlLink')}")
         return {"id": created["id"], "title": title, "link": created.get("htmlLink", "")}
     except HttpError as e:
-        logger.error(f"[CALENDAR] API error creating event: {e}")
+        logger.error(f"[CALENDAR] API error creating event: {type(e).__name__}: {e}")
         raise
 
 

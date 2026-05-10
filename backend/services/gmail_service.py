@@ -192,7 +192,7 @@ async def get_unread_emails(max_results: int = 10, smart_filter: bool = True) ->
 
 
 async def send_email(to: str, subject: str, body: str, cc: Optional[str] = None) -> None:
-    logger.info(f"[GMAIL] Sending email to {to}…")
+    logger.info(f"[GMAIL] Sending to: {to}, subject: {subject}")
     creds = await get_credentials()
     if not creds:
         raise ValueError("Google credentials not configured.")
@@ -205,8 +205,8 @@ async def send_email(to: str, subject: str, body: str, cc: Optional[str] = None)
             msg["Cc"] = cc
         msg.set_content(body)
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        service.users().messages().send(userId="me", body={"raw": raw}).execute()
-        logger.info("[GMAIL] Email sent")
+        result = service.users().messages().send(userId="me", body={"raw": raw}).execute()
+        logger.info(f"[GMAIL] Email sent: id={result.get('id')} threadId={result.get('threadId')}")
     except HttpError as e:
         logger.error(f"[GMAIL] Send error: {type(e).__name__}: {e}")
         raise

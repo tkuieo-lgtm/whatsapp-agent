@@ -2,6 +2,7 @@ import base64
 import logging
 import os
 import tempfile
+import traceback
 
 from config import settings
 
@@ -34,14 +35,14 @@ async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str
 
     tmp_path = None
     try:
+        # Create temp file, close fd immediately, then write with regular open()
+        # This avoids platform-specific issues with os.write() on open fd
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
-        try:
-            os.write(tmp_fd, audio_bytes)
-        finally:
-            os.close(tmp_fd)
+        os.close(tmp_fd)                          # close fd before writing
+        with open(tmp_path, "wb") as f:
+            f.write(audio_bytes)                   # write via regular file handle
 
-        logger.info(f"[VOICE] Temp file path: {tmp_path}")
-        logger.info(f"[VOICE] Audio file size: {os.path.getsize(tmp_path)} bytes")
+        logger.info(f"[VOICE] Temp file: {tmp_path}, size: {os.path.getsize(tmp_path)} bytes")
         logger.info("[VOICE] Calling Groq Whisper...")
 
         with open(tmp_path, "rb") as audio_file:
@@ -54,13 +55,9 @@ async def transcribe_voice(audio_data: str, mime_type: str = "audio/ogg") -> str
         result_text = transcription.text.strip()
         logger.info(f"[VOICE] Transcription result: \"{result_text}\"")
 
-        if not result_text:
-            return ""   # Caller handles empty string
-
-        return result_text
+        return result_text or ""
 
     except Exception as e:
-        import traceback
         logger.error(f"[VOICE] Error: {type(e).__name__}: {str(e)}")
         logger.error(f"[VOICE] Full error:\n{traceback.format_exc()}")
         raise

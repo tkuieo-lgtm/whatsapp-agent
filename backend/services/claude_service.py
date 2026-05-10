@@ -304,13 +304,30 @@ async def _get_history(limit: int = 20) -> List[Dict]:
         return []
 
 
-async def _create_pending_action(action_type: str, payload: Dict) -> str:
+async def _create_pending_action(action_type: str, payload: Dict, channel: str = "whatsapp") -> str:
     async with AsyncSessionLocal() as session:
-        action = PendingAction(type=action_type, payload=payload)
+        action = PendingAction(type=action_type, payload=payload, channel=channel)
         session.add(action)
         await session.commit()
         await session.refresh(action)
         return str(action.id)
+
+
+async def cleanup_stale_pending(channel: str, max_age_minutes: int = 3) -> None:
+    """Delete old pending actions for this channel — call before every non-approval message."""
+    from sqlalchemy import delete as sa_delete
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max_age_minutes)
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            sa_delete(PendingAction)
+            .where(PendingAction.channel == channel)
+            .where(PendingAction.status == "pending")
+            .where(PendingAction.created_at < cutoff)
+        )
+        deleted = result.rowcount
+        await session.commit()
+    if deleted:
+        logger.info(f"[PENDING] Cleaned up {deleted} stale pending action(s) for channel={channel}")
 
 
 async def _log_action(action_type: str, details: Dict, status: str) -> None:
@@ -360,7 +377,7 @@ async def _is_auto_mode(action_type: str) -> bool:
 # Tool execution
 # ---------------------------------------------------------------------------
 
-async def _execute_tool(name: str, inp: Dict, is_group: bool = False) -> Tuple[str, bool]:
+async def _execute_tool(name: str, inp: Dict, is_group: bool = False, channel: str = "whatsapp") -> Tuple[str, bool]:
     """Execute a tool. Returns (result_text, needs_approval)."""
     try:
         # --- Read tools ---
@@ -610,9 +627,9 @@ async def process_message(
                     if b.type != "tool_use":
                         continue
                     tools_used.append(b.name)
-                    result, needs_approval = await _execute_tool(b.name, b.input, is_group)
+                    result, needs_approval = await _execute_tool(b.name, b.input, is_group, channel)
                     if needs_approval:
-                        await _create_pending_action(b.name, b.input)
+                        await _create_pending_action(b.name, b.input, channel=channel)
                         await _save_history("assistant", result, channel=channel)
                         return result, ",".join(tools_used)
                     tool_results.append(
@@ -642,11 +659,11 @@ async def check_and_handle_approval(
     channel: str = "whatsapp",
 ) -> Optional[Tuple[str, str]]:
     """
-    If `text` is an approval/rejection response AND there is an open pending action,
+    If `text` is an approval/rejection response AND there is a pending action for this channel,
     execute or cancel it and return (response_text, tool_used).
-    Returns None if the text is not an approval keyword or there is no pending action.
+    Returns None if text is not an approval keyword or there is no matching pending action.
     """
-    from sqlalchemy import update as sa_update
+    from sqlalchemy import delete as sa_delete, update as sa_update
     from database import ActionLog, AsyncSessionLocal, PendingAction
 
     lower = text.lower().strip()
@@ -657,6 +674,7 @@ async def check_and_handle_approval(
         result = await session.execute(
             select(PendingAction)
             .where(PendingAction.status == "pending")
+            .where(PendingAction.channel == channel)   # channel isolation
             .order_by(PendingAction.created_at.desc())
             .limit(1)
         )
@@ -668,25 +686,21 @@ async def check_and_handle_approval(
     if datetime.now(timezone.utc) > pending.expires_at:
         async with AsyncSessionLocal() as session:
             await session.execute(
-                sa_update(PendingAction)
-                .where(PendingAction.id == pending.id)
-                .values(status="expired")
+                sa_delete(PendingAction).where(PendingAction.id == pending.id)
             )
             await session.commit()
         return "⏰ הפעולה פגה. אנא בקש שוב.", ""
 
     if lower in _YES_WORDS:
-        # Atomic claim — prevents double execution
-        from sqlalchemy import update as sa_update
+        # Atomic delete — only proceeds if still "pending", prevents double execution
         async with AsyncSessionLocal() as session:
-            upd = await session.execute(
-                sa_update(PendingAction)
+            del_result = await session.execute(
+                sa_delete(PendingAction)
                 .where(PendingAction.id == pending.id)
                 .where(PendingAction.status == "pending")
-                .values(status="approved")
                 .returning(PendingAction.type, PendingAction.payload)
             )
-            row = upd.first()
+            row = del_result.first()
             if not row:
                 await session.commit()
                 return "הפעולה כבר בוצעה.", ""
@@ -703,11 +717,10 @@ async def check_and_handle_approval(
         return response, action_type
 
     else:
+        # Rejected — delete from DB immediately
         async with AsyncSessionLocal() as session:
             await session.execute(
-                sa_update(PendingAction)
-                .where(PendingAction.id == pending.id)
-                .values(status="rejected")
+                sa_delete(PendingAction).where(PendingAction.id == pending.id)
             )
             await session.commit()
         response = "✅ הפעולה בוטלה. איך אוכל לעזור?"

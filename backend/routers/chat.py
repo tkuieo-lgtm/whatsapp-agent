@@ -338,8 +338,9 @@ async def chat_send(body: ChatMessage):
         logger.info(f"[CHAT] Dedup hit for: {text[:40]}")
         return _recent[key][0]
 
-    # --- Approval flow (shared with WhatsApp) ---
-    from services.claude_service import check_and_handle_approval, process_message
+    # --- Cleanup stale pending + approval flow ---
+    from services.claude_service import check_and_handle_approval, cleanup_stale_pending, process_message
+    await cleanup_stale_pending("web")
     approval = await check_and_handle_approval(text, channel="web")
     if approval is not None:
         response_text, _ = approval

@@ -58,6 +58,7 @@ class PendingAction(Base):
     type = Column(String, nullable=False)
     payload = Column(JSONB, nullable=False)
     status = Column(String, default="pending")
+    channel = Column(String(20), default="whatsapp")  # whatsapp | web | telegram
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(
         DateTime(timezone=True),
@@ -176,6 +177,9 @@ async def verify_tables() -> bool:
             # Add channel column to existing deployments (idempotent)
             await conn.execute(
                 text("ALTER TABLE conversation_history ADD COLUMN IF NOT EXISTS channel VARCHAR(20) DEFAULT 'whatsapp'")
+            )
+            await conn.execute(
+                text("ALTER TABLE pending_actions ADD COLUMN IF NOT EXISTS channel VARCHAR(20) DEFAULT 'whatsapp'")
             )
         logger.info("[DB] All tables verified / created.")
         return True

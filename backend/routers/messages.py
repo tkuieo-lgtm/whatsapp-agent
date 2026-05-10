@@ -9,7 +9,7 @@ from config import settings
 from database import ActionLog, AsyncSessionLocal, GroupInteraction, PendingAction, VoicePreference
 from models.schemas import IncomingMessage
 from services import whatsapp_service
-from services.claude_service import check_and_handle_approval, execute_approved_action, process_message
+from services.claude_service import check_and_handle_approval, cleanup_stale_pending, execute_approved_action, process_message
 from services.tts_service import should_use_voice
 
 router = APIRouter()
@@ -68,6 +68,11 @@ async def _handle_message(msg: IncomingMessage) -> None:
             feedback = "negative"
         if feedback:
             await _log_voice_preference("feedback", used_voice=feedback == "positive", feedback=feedback)
+
+    # --- Cleanup stale pending actions before processing ---
+    # Any non-approval message clears pending actions older than 3 min for this channel
+    if not msg.is_group:
+        await cleanup_stale_pending("whatsapp")
 
     # --- Approval flow (DM only — uses shared helper) ---
     if not msg.is_group:

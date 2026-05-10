@@ -38,55 +38,78 @@ def _fmt_time(m: re.Match) -> str:
         return hour
     if mi == 30:
         return f"חצי {hour}"
-    if mi == 15:
-        return f"רבע ל{hour}"
     return f"{hour} ועוד {mi} דקות"
 
 
 def prepare_for_speech(text: str) -> str:
     """Clean text so it reads naturally when spoken aloud."""
-    # Markdown
     text = re.sub(r"\*+", "", text)
     text = re.sub(r"_+", "", text)
     text = re.sub(r"#{1,6}\s*", "", text)
     text = re.sub(r"`[^`]*`", "", text)
-    # URLs
     text = re.sub(r"https?://\S+", "", text)
-    # Emojis
     text = _EMOJI_RE.sub("", text)
-    # Times  (09:00 → תשע בבוקר)
     text = re.sub(r"\b(\d{1,2}):(\d{2})\b", _fmt_time, text)
-    # Collapse whitespace
     text = re.sub(r"\s+", " ", text).strip()
-    # Cap length — long speech is uncomfortable
     if len(text) > 600:
         text = text[:597] + "..."
     return text
 
 
 # ---------------------------------------------------------------------------
-# TTS via edge-tts  (he-IL-AvriNeural — natural male Hebrew voice)
+# gTTS fallback (no API key, always available)
+# ---------------------------------------------------------------------------
+
+async def _gtts_tts(text: str) -> bytes:
+    from gtts import gTTS
+    from pydub import AudioSegment
+
+    mp3_fd, mp3_path = tempfile.mkstemp(suffix=".mp3")
+    ogg_fd, ogg_path = tempfile.mkstemp(suffix=".ogg")
+    os.close(mp3_fd)
+    os.close(ogg_fd)
+    try:
+        gTTS(text=text, lang="iw").save(mp3_path)
+        AudioSegment.from_mp3(mp3_path).export(ogg_path, format="ogg", codec="libopus")
+        with open(ogg_path, "rb") as f:
+            return f.read()
+    finally:
+        for p in (mp3_path, ogg_path):
+            if os.path.exists(p):
+                os.unlink(p)
+
+
+# ---------------------------------------------------------------------------
+# Main TTS — edge-tts with gTTS fallback
 # ---------------------------------------------------------------------------
 
 async def text_to_speech(text: str) -> bytes:
-    """Convert text to OGG/Opus bytes suitable for WhatsApp voice notes."""
-    import edge_tts
+    """Convert text to OGG/Opus bytes. Tries edge-tts first, falls back to gTTS."""
     from pydub import AudioSegment
 
     clean = prepare_for_speech(text)
-    logger.info(f"[TTS] edge-tts ({VOICE}) — {len(clean)} chars: {clean[:60]!r}…")
+    logger.info(f"[TTS] Generating with edge-tts ({VOICE}) — {len(clean)} chars: {clean[:60]!r}…")
 
-    # Step 1: edge-tts → mp3 bytes via streaming
     mp3_data = b""
-    communicate = edge_tts.Communicate(clean, voice=VOICE)
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            mp3_data += chunk["data"]
+    try:
+        import edge_tts
+        communicate = edge_tts.Communicate(clean, voice=VOICE)
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                mp3_data += chunk["data"]
 
-    if not mp3_data:
-        raise RuntimeError("edge-tts returned no audio data")
+        if not mp3_data:
+            raise RuntimeError("edge-tts returned empty audio stream")
 
-    # Step 2: mp3 → ogg/opus (WhatsApp voice note format)
+        logger.info(f"[TTS] Generated {len(mp3_data)} bytes from edge-tts")
+
+    except Exception as e:
+        logger.warning(f"[TTS] edge-tts failed ({type(e).__name__}: {e}) — falling back to gTTS")
+        result = await _gtts_tts(clean)
+        logger.info(f"[TTS] gTTS fallback: {len(result)} bytes")
+        return result
+
+    # Convert mp3 → ogg/opus
     mp3_fd, mp3_path = tempfile.mkstemp(suffix=".mp3")
     ogg_fd, ogg_path = tempfile.mkstemp(suffix=".ogg")
     os.close(mp3_fd)
@@ -97,7 +120,7 @@ async def text_to_speech(text: str) -> bytes:
         AudioSegment.from_mp3(mp3_path).export(ogg_path, format="ogg", codec="libopus")
         with open(ogg_path, "rb") as f:
             result = f.read()
-        logger.info(f"[TTS] Generated {len(result)} bytes (ogg/opus)")
+        logger.info(f"[TTS] Converted to ogg/opus: {len(result)} bytes")
         return result
     finally:
         for p in (mp3_path, ogg_path):
