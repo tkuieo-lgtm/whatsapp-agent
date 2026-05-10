@@ -23,12 +23,13 @@ async def check_and_send_reminders() -> None:
 
             for reminder in due:
                 msg = f"🔔 *תזכורת:* {reminder.text}"
-                sent = await whatsapp_service.send_message(msg)
-                if sent:
-                    reminder.sent = True
-                    logger.info(f"[REMINDER] Sent: {reminder.text}")
+                ok = await whatsapp_service.send_message(msg)
+                if ok:
+                    logger.info(f"[REMINDER] Sent: {reminder.text!r}")
                 else:
-                    logger.warning(f"[REMINDER] Failed to send: {reminder.text}")
+                    # Mark sent even on failure — prevents infinite retry loop every minute
+                    logger.warning(f"[REMINDER] Send failed for {reminder.text!r} — marking sent to prevent loop")
+                reminder.sent = True  # always mark regardless of send result
 
             if due:
                 await session.commit()

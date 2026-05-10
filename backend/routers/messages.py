@@ -96,6 +96,7 @@ async def _handle_message(msg: IncomingMessage) -> None:
         await _log_voice_preference("message", used_voice=use_voice)
 
         if use_voice and not msg.is_group:
+            logger.info(f"[TTS] About to send {len(response_text.split())} word response as voice note")
             await whatsapp_service.send_voice_message(response_text, chat_id=reply_chat_id)
         else:
             await whatsapp_service.send_message(response_text, chat_id=reply_chat_id)

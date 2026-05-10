@@ -607,12 +607,17 @@ async def execute_approved_action(action_type: str, payload: Dict) -> str:
             return f"✅ האירוע עודכן"
 
         if action_type == "move_calendar_event":
+            eid = payload["event_id"]
+            src = payload.get("source_calendar_id", "primary")
+            dst = payload["destination_calendar_id"]
+            logger.info(f"[CALENDAR] Moving event_id={eid!r} from {src!r} to {dst!r}")
             await calendar_service.move_event(
-                event_id=payload["event_id"],
-                source_calendar_id=payload.get("source_calendar_id", "primary"),
-                destination_calendar_id=payload["destination_calendar_id"],
+                event_id=eid,
+                source_calendar_id=src,
+                destination_calendar_id=dst,
             )
-            return f"✅ האירוע הועבר ל-{payload['destination_calendar_id']}"
+            logger.info(f"[CALENDAR] Move complete: {eid!r}")
+            return f"✅ האירוע הועבר ל-{dst}"
 
         if action_type == "create_email_rule":
             conditions = {k: payload[k] for k in ("from_contains", "subject_contains") if payload.get(k)}
@@ -803,6 +808,7 @@ async def check_and_handle_approval(
             payload = row[1]
             await session.commit()
         logger.info(f"[PENDING] Claimed: type={action_type!r} payload_keys={list(payload.keys()) if payload else []}")
+        logger.info(f"[PENDING] Deleted action id={pending.id} after claiming for execution")
 
         response = await execute_approved_action(action_type, payload)
 

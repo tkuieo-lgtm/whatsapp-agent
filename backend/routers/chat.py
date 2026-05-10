@@ -39,6 +39,12 @@ _CHAT_HTML = r"""<!DOCTYPE html>
     .bot{{align-items:flex-start}}
     .ts{{font-size:11px;color:#999;margin-top:2px;padding:0 4px}}
     .typing{{color:#555;font-size:13px;padding:7px 12px;background:#fff;border-radius:12px;align-self:flex-start;box-shadow:0 1px 2px rgba(0,0,0,.08)}}
+    /* WhatsApp-style voice bubble */
+    .voice-bubble{{background:#dcf8c6;border-radius:12px 0 12px 12px;padding:8px 10px;display:flex;align-items:center;gap:8px;min-width:220px;max-width:300px;box-shadow:0 1px 2px rgba(0,0,0,.12)}}
+    .v-play{{background:#25d366;color:#fff;border:none;border-radius:50%;width:36px;height:36px;font-size:14px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center}}
+    .v-waveform{{flex:1;height:30px;cursor:pointer}}
+    .v-info{{display:flex;flex-direction:column;align-items:flex-end;gap:2px;font-size:11px;color:#555}}
+    .v-speed{{background:none;border:1px solid #ccc;border-radius:4px;font-size:10px;cursor:pointer;padding:1px 3px;color:#555}}
     #bar{{display:flex;gap:8px;padding:10px 12px;background:#f0f0f0;border-top:1px solid #ddd;align-items:center}}
     #inp{{flex:1;padding:10px 14px;border:none;border-radius:22px;font-size:15px;outline:none;font-family:inherit;background:#fff}}
     .icon-btn{{background:#25d366;color:#fff;border:none;border-radius:50%;width:44px;height:44px;cursor:pointer;font-size:19px;flex-shrink:0;transition:background .2s}}
@@ -92,7 +98,7 @@ async function login() {{
     sessionStorage.setItem('cp', pwd);
     document.getElementById('overlay').style.display = 'none';
     const d = await r.json();
-    addBubble('bot', d.response, d.audio);
+    await addBubble('bot', d.response, d.audio);
     document.getElementById('inp').focus();
   }} else {{
     document.getElementById('err').textContent = 'סיסמה שגויה';
@@ -103,75 +109,156 @@ async function login() {{
 // ---------------------------------------------------------------------------
 // Message bubbles
 // ---------------------------------------------------------------------------
-function addBubble(role, text, audioB64, autoSpeak) {{
+async function addBubble(role, text, audioB64, autoSpeak) {{
   const wrap = document.createElement('div');
   wrap.className = `wrap ${{role}}`;
-  const b = document.createElement('div');
-  b.className = 'bubble';
-  b.textContent = text;
-  wrap.appendChild(b);
 
-  // 🔊 button on bot messages — click to play, not auto-play
-  if (role === 'bot') {{
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:2px';
-    const ts = document.createElement('span');
-    ts.className = 'ts';
-    ts.textContent = new Date().toLocaleTimeString('he-IL', {{hour:'2-digit',minute:'2-digit'}});
-    const speakBtn = document.createElement('button');
-    speakBtn.textContent = '🔊';
-    speakBtn.title = 'השמע';
-    speakBtn.style.cssText = 'background:none;border:none;cursor:pointer;font-size:14px;padding:0 2px;opacity:.7';
-    if (audioB64) {{
-      speakBtn.dataset.audio = audioB64;
-      speakBtn.onclick = () => playAudio(speakBtn.dataset.audio);
-      if (autoSpeak) playAudio(audioB64);  // auto-play on explicit "תקריא" request
-    }} else {{
-      speakBtn.onclick = () => requestAudio(text, speakBtn);
+  if (role === 'bot' && audioB64) {{
+    // Voice message — show WhatsApp-style audio bubble instead of text
+    const vb = await createVoiceBubble(audioB64);
+    wrap.appendChild(vb);
+    if (autoSpeak) {{
+      // Auto-play when explicitly requested ("תקריא")
+      vb.querySelector('.v-play').click();
     }}
-    row.appendChild(ts);
-    row.appendChild(speakBtn);
-    wrap.appendChild(row);
   }} else {{
-    const ts = document.createElement('div');
-    ts.className = 'ts';
-    ts.textContent = new Date().toLocaleTimeString('he-IL', {{hour:'2-digit',minute:'2-digit'}});
-    wrap.appendChild(ts);
+    // Text message
+    const b = document.createElement('div');
+    b.className = 'bubble';
+    b.textContent = text;
+    wrap.appendChild(b);
+
+    if (role === 'bot') {{
+      // 🔊 button for on-demand TTS
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:2px';
+      const ts = document.createElement('span');
+      ts.className = 'ts';
+      ts.textContent = new Date().toLocaleTimeString('he-IL', {{hour:'2-digit',minute:'2-digit'}});
+      const speakBtn = document.createElement('button');
+      speakBtn.textContent = '🔊';
+      speakBtn.title = 'השמע';
+      speakBtn.style.cssText = 'background:none;border:none;cursor:pointer;font-size:14px;padding:0 2px;opacity:.7';
+      speakBtn.onclick = () => requestAudio(text, speakBtn);
+      row.appendChild(ts);
+      row.appendChild(speakBtn);
+      wrap.appendChild(row);
+    }} else {{
+      const ts = document.createElement('div');
+      ts.className = 'ts';
+      ts.textContent = new Date().toLocaleTimeString('he-IL', {{hour:'2-digit',minute:'2-digit'}});
+      wrap.appendChild(ts);
+    }}
   }}
 
   document.getElementById('messages').appendChild(wrap);
-  b.scrollIntoView({{block:'end'}});
-  return b;
+  wrap.lastElementChild.scrollIntoView({{block:'end'}});
 }}
 
-function playAudio(b64) {{
+// ---------------------------------------------------------------------------
+// WhatsApp-style voice bubble
+// ---------------------------------------------------------------------------
+async function createVoiceBubble(b64) {{
+  const wrap = document.createElement('div');
+  wrap.className = 'voice-bubble';
+
+  const playBtn = document.createElement('button');
+  playBtn.className = 'v-play';
+  playBtn.innerHTML = '▶';
+
+  const canvas = document.createElement('canvas');
+  canvas.className = 'v-waveform';
+  canvas.width = 130; canvas.height = 30;
+
+  const info = document.createElement('div');
+  info.className = 'v-info';
+  const timeEl = document.createElement('span');
+  timeEl.textContent = '0:00';
+  const speedBtn = document.createElement('select');
+  speedBtn.className = 'v-speed';
+  ['1x','1.5x','2x'].forEach((s,i) => {{
+    const o = document.createElement('option');
+    o.value = [1,1.5,2][i]; o.textContent = s;
+    speedBtn.appendChild(o);
+  }});
+  info.appendChild(timeEl);
+  info.appendChild(speedBtn);
+
+  wrap.appendChild(playBtn);
+  wrap.appendChild(canvas);
+  wrap.appendChild(info);
+
+  const audio = new Audio(`data:audio/ogg;base64,${{b64}}`);
+
+  // Draw waveform using Web Audio API
   try {{
-    const audio = new Audio(`data:audio/ogg;base64,${{b64}}`);
-    audio.play().catch(() => {{
-      new Audio(`data:audio/mpeg;base64,${{b64}}`).play().catch(e => console.warn('Audio:', e));
-    }});
-  }} catch(e) {{ console.warn('Audio init:', e); }}
+    const buf = Uint8Array.from(atob(b64), c => c.charCodeAt(0)).buffer;
+    const actx = new (window.AudioContext || window.webkitAudioContext)();
+    const decoded = await actx.decodeAudioData(buf);
+    const data = decoded.getChannelData(0);
+    const ctx = canvas.getContext('2d');
+    const step = Math.ceil(data.length / canvas.width);
+    const amp = canvas.height / 2;
+    ctx.strokeStyle = '#25d366';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < canvas.width; i++) {{
+      let mn = 1, mx = -1;
+      for (let j = 0; j < step; j++) {{ const d = data[i*step+j]||0; if(d<mn)mn=d; if(d>mx)mx=d; }}
+      ctx.moveTo(i, (1+mn)*amp); ctx.lineTo(i, (1+mx)*amp);
+    }}
+    ctx.stroke();
+    actx.close();
+  }} catch(e) {{
+    // Fallback: flat waveform bar
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#25d366';
+    ctx.fillRect(0, 12, 130, 6);
+  }}
+
+  // Duration display
+  audio.addEventListener('loadedmetadata', () => {{
+    const d = audio.duration;
+    timeEl.textContent = isFinite(d) ? `0:${{String(Math.floor(d)).padStart(2,'0')}}` : '0:00';
+  }});
+  audio.addEventListener('timeupdate', () => {{
+    const t = audio.currentTime;
+    timeEl.textContent = `${{Math.floor(t/60)}}:${{String(Math.floor(t%60)).padStart(2,'0')}}`;
+  }});
+  audio.addEventListener('ended', () => {{ playBtn.innerHTML = '▶'; }});
+
+  speedBtn.addEventListener('change', () => {{ audio.playbackRate = parseFloat(speedBtn.value); }});
+
+  playBtn.onclick = () => {{
+    if (audio.paused) {{ audio.play(); playBtn.innerHTML = '⏸'; }}
+    else {{ audio.pause(); playBtn.innerHTML = '▶'; }}
+  }};
+
+  // Click waveform to seek
+  canvas.onclick = (e) => {{
+    if (audio.duration) audio.currentTime = (e.offsetX / canvas.width) * audio.duration;
+  }};
+
+  return wrap;
 }}
 
 async function requestAudio(text, btn) {{
-  btn.disabled = true;
-  btn.textContent = '⏳';
+  btn.disabled = true; btn.textContent = '⏳';
   try {{
     const r = await fetch('/chat/speak', {{
-      method: 'POST',
-      headers: {{'Content-Type': 'application/json'}},
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify({{text, password: pwd}})
     }});
     const d = await r.json();
     if (d.audio) {{
-      btn.dataset.audio = d.audio;
-      btn.textContent = '🔊';
-      btn.disabled = false;
-      playAudio(d.audio);
+      btn.disabled = false; btn.textContent = '🔊';
+      // Replace the 🔊 button row with a proper voice bubble
+      const vb = await createVoiceBubble(d.audio);
+      btn.closest('.wrap').prepend(vb);
+      btn.closest('.wrap').querySelector('.ts').remove();
+      btn.remove();
     }}
-  }} catch(e) {{
-    btn.textContent = '❌';
-  }}
+  }} catch(e) {{ btn.textContent = '❌'; }}
 }}
 
 // ---------------------------------------------------------------------------
@@ -271,7 +358,7 @@ async function doSend(payload) {{
     typing.remove();
     const d = await r.json();
     const text = d.response || d.error || 'שגיאה';
-    addBubble('bot', text, d.audio, d.auto_speak);
+    await addBubble('bot', text, d.audio, d.auto_speak);
   }} catch(e) {{
     typing.remove();
     addBubble('bot', 'שגיאת תקשורת');
