@@ -160,6 +160,23 @@ class Reflection(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class GroupMember(Base):
+    __tablename__ = "group_members"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    phone = Column(String(30), nullable=False)
+    group_id = Column(String(100), nullable=False)
+    name = Column(String(100))
+    email = Column(String(200))
+    allowed_calendar_ids = Column(JSONB, default=list)   # list of calendar IDs they may query
+    status = Column(String(20), default="unregistered")  # unregistered|awaiting_email|pending_approval|approved
+    joined_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        __import__("sqlalchemy").UniqueConstraint("phone", "group_id", name="uq_group_member"),
+    )
+
+
 class GroupInteraction(Base):
     __tablename__ = "group_interactions"
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -180,6 +197,21 @@ async def verify_tables() -> bool:
             )
             await conn.execute(
                 text("ALTER TABLE pending_actions ADD COLUMN IF NOT EXISTS channel VARCHAR(20) DEFAULT 'whatsapp'")
+            )
+            await conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS group_members ("
+                    "id UUID PRIMARY KEY DEFAULT gen_random_uuid(),"
+                    "phone VARCHAR(30) NOT NULL,"
+                    "group_id VARCHAR(100) NOT NULL,"
+                    "name VARCHAR(100),"
+                    "email VARCHAR(200),"
+                    "allowed_calendar_ids JSONB DEFAULT '[]',"
+                    "status VARCHAR(20) DEFAULT 'unregistered',"
+                    "joined_at TIMESTAMPTZ DEFAULT NOW(),"
+                    "CONSTRAINT uq_group_member UNIQUE (phone, group_id)"
+                    ")"
+                )
             )
         logger.info("[DB] All tables verified / created.")
         return True
