@@ -270,7 +270,7 @@ async function doSend(payload) {{
     }});
     typing.remove();
     const d = await r.json();
-    const text = d.transcription ? `🎤 ${{d.transcription}}\n\n${{d.response}}` : (d.response || d.error || 'שגיאה');
+    const text = d.response || d.error || 'שגיאה';
     addBubble('bot', text, d.audio, d.auto_speak);
   }} catch(e) {{
     typing.remove();
