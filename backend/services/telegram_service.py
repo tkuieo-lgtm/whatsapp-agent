@@ -13,11 +13,24 @@ _VOICE_NEGATIVE = {"תכתוב", "בטקסט", "טקסט", "write"}
 _VOICE_POSITIVE = {"תקריא", "תגיד", "הקרא", "speak"}
 
 
-async def _tts_send(update, response_text: str, force_text: bool = False, force_voice: bool = False, was_voice_input: bool = False) -> str:
+def _sender_info(update) -> tuple[int, str, bool]:
     """
-    Send response as voice or text based on explicit preference and auto-detection.
-    Returns "voice" or "text".
+    Extract sender identity from the raw message (not effective_user).
+    Returns (sender_id, sender_name, is_owner).
+    Using message.from_user prevents any group/chat-level confusion.
     """
+    from_user = update.message.from_user if update.message else None
+    if not from_user:
+        return 0, "unknown", False
+    sender_id   = from_user.id
+    sender_name = from_user.first_name or str(sender_id)
+    is_owner    = str(sender_id) == settings.owner_telegram_id
+    return sender_id, sender_name, is_owner
+
+
+async def _tts_send(update, response_text: str, force_text: bool = False,
+                    force_voice: bool = False, was_voice_input: bool = False) -> str:
+    """Send response as voice or text. Returns 'voice' or 'text'."""
     from services.tts_service import should_use_voice, text_to_speech
 
     if force_text:
@@ -55,51 +68,48 @@ async def start_telegram_bot() -> None:
 
     _app = Application.builder().token(settings.telegram_bot_token).build()
 
-    def _is_owner(update: Update) -> bool:
-        return str(update.effective_user.id) == settings.owner_telegram_id
-
     # ---------------------------------------------------------------------------
     # /start
     # ---------------------------------------------------------------------------
     async def cmd_start(update: Update, context):
-        if not _is_owner(update):
+        sender_id, sender_name, is_owner = _sender_info(update)
+        logger.info(f"[SECURITY] /start sender_id={sender_id} is_owner={is_owner}")
+        if not is_owner:
             await update.message.reply_text("לא מורשה.")
             return
         await update.message.reply_text(f"שלום! אני {settings.bot_name} 👋 במה אוכל לעזור?")
 
     # ---------------------------------------------------------------------------
-    # Group member helpers — uses Telegram user_id as "phone", chat_id as group_id
+    # Group member helpers — str(user_id) as phone, tg:{chat_id} as group_id
     # ---------------------------------------------------------------------------
-    async def _get_tg_group_member(user_id: int, chat_id: int) -> dict | None:
+    async def _get_tg_group_member(sender_id: int, chat_id: int) -> dict | None:
         from sqlalchemy import select
         from database import AsyncSessionLocal, GroupMember
-        phone_key = str(user_id)
-        group_key = f"tg:{chat_id}"
         async with AsyncSessionLocal() as session:
             result = await session.execute(
                 select(GroupMember)
-                .where(GroupMember.phone == phone_key)
-                .where(GroupMember.group_id == group_key)
+                .where(GroupMember.phone == str(sender_id))
+                .where(GroupMember.group_id == f"tg:{chat_id}")
             )
             gm = result.scalar_one_or_none()
             if gm:
                 return {
-                    "name": gm.name or str(user_id),
+                    "name": gm.name or str(sender_id),
                     "email": gm.email,
                     "status": gm.status,
-                    "phone": phone_key,
+                    "phone": str(sender_id),
                     "allowed_calendar_ids": gm.allowed_calendar_ids or [],
                 }
         return None
 
-    async def _create_tg_group_member(user_id: int, chat_id: int, name: str) -> None:
+    async def _create_tg_group_member(sender_id: int, chat_id: int, name: str) -> None:
         from sqlalchemy.dialects.postgresql import insert as pg_insert
         from database import AsyncSessionLocal, GroupMember
         async with AsyncSessionLocal() as session:
             stmt = (
                 pg_insert(GroupMember)
                 .values(
-                    phone=str(user_id),
+                    phone=str(sender_id),
                     group_id=f"tg:{chat_id}",
                     name=name,
                     status="awaiting_email",
@@ -109,13 +119,13 @@ async def start_telegram_bot() -> None:
             await session.execute(stmt)
             await session.commit()
 
-    async def _update_tg_group_member_email(user_id: int, chat_id: int, email: str) -> None:
+    async def _update_tg_group_member_email(sender_id: int, chat_id: int, email: str) -> None:
         from sqlalchemy import update as sa_update
         from database import AsyncSessionLocal, GroupMember
         async with AsyncSessionLocal() as session:
             await session.execute(
                 sa_update(GroupMember)
-                .where(GroupMember.phone == str(user_id))
+                .where(GroupMember.phone == str(sender_id))
                 .where(GroupMember.group_id == f"tg:{chat_id}")
                 .values(email=email, status="pending_approval")
             )
@@ -125,9 +135,14 @@ async def start_telegram_bot() -> None:
     # Text messages (DM + groups)
     # ---------------------------------------------------------------------------
     async def handle_text(update: Update, context):
+        # --- Identity: always from message.from_user, never from chat ---
+        sender_id, sender_name, is_owner = _sender_info(update)
         chat = update.effective_chat
-        user = update.effective_user
+        chat_title = getattr(chat, "title", None) or str(chat.id)
+        is_group = chat.type not in ("private",)
         text = update.message.text or ""
+
+        logger.info(f"[SECURITY] sender_id={sender_id} sender_name={sender_name!r} is_owner={is_owner} chat_type={chat.type} chat={chat_title!r}")
 
         # Detect @mention via message entities
         bot_username = context.bot.username or ""
@@ -136,45 +151,37 @@ async def start_telegram_bot() -> None:
             and text[e.offset:e.offset + e.length].lstrip("@").lower() == bot_username.lower()
             for e in (update.message.entities or [])
         )
-
-        is_group = chat.type not in ("private",)
-        owner = _is_owner(update)
-        sender_id = user.id if user else 0
-        logger.info(f"[TELEGRAM] chat_type={chat.type} is_group={is_group} sender={sender_id} is_owner={owner} mention={mention}")
+        logger.info(f"[TELEGRAM] chat_type={chat.type} is_group={is_group} mention={mention}")
 
         # =======================================================================
         # GROUP path
         # =======================================================================
         if is_group:
-            # Only process if @mentioned OR from owner
-            if not mention and not owner:
-                return
+            if not mention and not is_owner:
+                return  # ignore un-mentioned messages from non-owners
 
-            if owner:
-                # Owner in group: full DM-like access (strip @mention, process as owner)
+            if is_owner:
+                # Owner in group — full DM-like access, strip @mention
                 cleaned = text.replace(f"@{bot_username}", "").strip()
                 if not cleaned:
                     return
-                text = cleaned
-                lower = text.lower()
+                lower = cleaned.lower()
                 force_text  = any(kw in lower for kw in _VOICE_NEGATIVE)
                 force_voice = any(kw in lower for kw in _VOICE_POSITIVE)
-                logger.info(f"[TELEGRAM] Group owner message: {text[:60]}")
+                logger.info(f"[TELEGRAM] Group owner msg: {cleaned[:60]}")
 
                 from services.claude_service import process_message, update_last_response_format
-                response, _ = await process_message(text, channel="telegram")
+                response, _ = await process_message(cleaned, channel="telegram")
                 fmt = await _tts_send(update, response, force_text=force_text, force_voice=force_voice)
                 await update_last_response_format("telegram", fmt)
                 return
 
-            # Non-owner @mentioned the bot
+            # Non-owner @mentioned the bot — group member flow
             cleaned = text.replace(f"@{bot_username}", "").strip()
             group_member = await _get_tg_group_member(sender_id, chat.id)
-            sender_name = user.full_name or str(sender_id)
 
-            # New member
             if not group_member:
-                logger.info(f"[GROUP] New member detected: {sender_id} ({sender_name}) in tg:{chat.id}")
+                logger.info(f"[GROUP] New member detected: {sender_id} ({sender_name!r}) in tg:{chat.id} ({chat_title!r})")
                 await _create_tg_group_member(sender_id, chat.id, sender_name)
                 await update.message.reply_text(
                     f"שלום {sender_name}! אני {settings.bot_name}, עוזר אישי של הבעלים 👋\n"
@@ -182,33 +189,29 @@ async def start_telegram_bot() -> None:
                 )
                 return
 
-            # Awaiting email
             if group_member["status"] == "awaiting_email":
                 from services.security_service import extract_email
                 email = extract_email(cleaned)
                 if email:
                     await _update_tg_group_member_email(sender_id, chat.id, email)
-                    # Notify owner
-                    from services.whatsapp_service import send_message as wa_send
                     try:
+                        from services.whatsapp_service import send_message as wa_send
                         await wa_send(
                             f"📬 *חבר Telegram חדש מבקש גישה*\n"
                             f"שם: {sender_name}\nID: {sender_id}\nמייל: {email}\n"
-                            f"קבוצה: tg:{chat.id}\n\nלאשר גישה? ענה *כן* או *לא*"
+                            f"קבוצה: {chat_title} (tg:{chat.id})\n\nלאשר? ענה *כן* או *לא*"
                         )
                     except Exception as e:
-                        logger.warning(f"[TELEGRAM] Owner WA notify failed: {e}")
+                        logger.warning(f"[TELEGRAM] WA owner notify failed: {e}")
                     await update.message.reply_text("תודה! נשלחה בקשת גישה לבעלים. נחכה לאישור.")
                 else:
                     await update.message.reply_text("לא זיהיתי כתובת מייל. שלח בבקשה כתובת מייל תקינה.")
                 return
 
-            # Pending approval
             if group_member["status"] == "pending_approval":
                 await update.message.reply_text("הבקשה שלך ממתינה לאישור הבעלים. אנא המתן.")
                 return
 
-            # Approved — process with group permissions
             if group_member["status"] == "approved":
                 from services.claude_service import process_message, update_last_response_format
                 response, _ = await process_message(
@@ -223,15 +226,16 @@ async def start_telegram_bot() -> None:
             return
 
         # =======================================================================
-        # DM path — must be owner
+        # DM path — owner only
         # =======================================================================
-        if not owner:
+        if not is_owner:
+            logger.warning(f"[SECURITY] DM from non-owner {sender_id} — ignored")
             return
 
         lower = text.lower()
         force_text  = any(kw in lower for kw in _VOICE_NEGATIVE)
         force_voice = any(kw in lower for kw in _VOICE_POSITIVE)
-        logger.info(f"[TELEGRAM] DM text: {text[:60]}")
+        logger.info(f"[TELEGRAM] Owner DM: {text[:60]}")
 
         from services.claude_service import process_message, update_last_response_format
         response, _ = await process_message(text, channel="telegram")
@@ -242,8 +246,11 @@ async def start_telegram_bot() -> None:
     # Voice notes (incoming) — owner only
     # ---------------------------------------------------------------------------
     async def handle_voice(update: Update, context):
-        if not _is_owner(update):
+        sender_id, sender_name, is_owner = _sender_info(update)
+        logger.info(f"[SECURITY] sender_id={sender_id} is_owner={is_owner} (voice note)")
+        if not is_owner:
             return
+
         logger.info("[TELEGRAM] Received voice note — downloading…")
         tmp_path = None
         try:
@@ -265,7 +272,6 @@ async def start_telegram_bot() -> None:
 
             logger.info(f"[TELEGRAM] Transcribed: {text[:80]}")
 
-            # Voice input: default voice out, but still respect "תכתוב" if spoken
             lower = text.lower()
             force_text  = any(kw in lower for kw in _VOICE_NEGATIVE)
             force_voice = any(kw in lower for kw in _VOICE_POSITIVE)
@@ -286,8 +292,11 @@ async def start_telegram_bot() -> None:
     # Audio files — owner only
     # ---------------------------------------------------------------------------
     async def handle_audio(update: Update, context):
-        if not _is_owner(update):
+        sender_id, sender_name, is_owner = _sender_info(update)
+        logger.info(f"[SECURITY] sender_id={sender_id} is_owner={is_owner} (audio file)")
+        if not is_owner:
             return
+
         logger.info("[TELEGRAM] Received audio file — treating as voice")
         tmp_path = None
         try:
@@ -329,7 +338,7 @@ async def start_telegram_bot() -> None:
     await _app.initialize()
     await _app.start()
     await _app.updater.start_polling(drop_pending_updates=True)
-    logger.info("[TELEGRAM] Bot started polling (voice I/O + group support enabled)")
+    logger.info("[TELEGRAM] Bot started polling (voice I/O + secure group support)")
 
 
 async def stop_telegram_bot() -> None:
