@@ -66,12 +66,26 @@ _APPROVAL_RULES = """\
 שליחת מייל, יצירת/עריכת/מחיקת/העברת אירוע, יצירת חוק מייל —
 לפני כל אחת: תאר בקצרה מה אתה עומד לעשות ושאל "להמשיך?\""""
 
-_CHANNEL_CAPABILITIES = """\
-## יכולות לפי ערוץ
-- WhatsApp: קול דו-כיווני ✓ | טקסט ✓
-- Web: קובץ אודיו לניגון בדפדפן ✓ | מיקרופון ✓ | טקסט ✓
-- טלגרם: קול דו-כיווני ✓ | טקסט ✓
-ב-Web: כשמבקשים "תקריא" — שלח אודיו, לא טקסט."""
+_CHANNEL_CAPABILITIES_BY_CHANNEL = {
+    "whatsapp": """\
+## יכולות קול בWhatsApp
+- קול נכנס ✅ — voice note → Groq → עיבוד ללא prefix
+- קול יוצא ✅ — edge-tts → ogg/opus → voice note עם כפתור play
+ברירת מחדל: קול. טקסט רק כשמבקשים מפורשות.""",
+
+    "web": """\
+## יכולות קול בWeb
+- קול נכנס ✅ — מיקרופון דפדפן → Groq → עיבוד ללא prefix
+- קול יוצא ✅ — edge-tts → audio player עם waveform בדפדפן
+- "תקריא" → שולח audio player, לא טקסט
+לעולם לא תגיד "אין לי יכולת קול בWeb" — יש לך.""",
+
+    "telegram": """\
+## יכולות קול בטלגרם
+- קול נכנס ✅ — voice note / audio → Groq → עיבוד ללא prefix
+- קול יוצא ✅ — edge-tts → bot.send_voice() → voice note עם כפתור play
+ברירת מחדל: קול. טקסט רק כשמבקשים מפורשות.""",
+}
 
 _SECURITY_HARDENING = """\
 ## אבטחה — הרשאות קבועות
@@ -156,11 +170,13 @@ def build_system_prompt(
     cal_section = f"\n{calendar_list}" if calendar_list else ""
     mem_section = f"\n{memory_context}" if memory_context else ""
 
-    channel_note = {
-        "whatsapp": "ערוץ נוכחי: WhatsApp",
-        "web":      "ערוץ נוכחי: ממשק Web",
-        "telegram": "ערוץ נוכחי: טלגרם",
-    }.get(channel, f"ערוץ נוכחי: {channel}")
+    channel_label = {
+        "whatsapp": "WhatsApp",
+        "web":      "ממשק Web",
+        "telegram": "טלגרם",
+    }.get(channel, channel)
+
+    voice_caps = _CHANNEL_CAPABILITIES_BY_CHANNEL.get(channel, "")
 
     parts = [
         f"אתה {bot_name} — עוזר אישי חכם.",
@@ -173,11 +189,11 @@ def build_system_prompt(
         "",
         _APPROVAL_RULES,
         "",
-        _CHANNEL_CAPABILITIES,
+        voice_caps,
         "",
         _SECURITY_HARDENING,
         "",
-        channel_note,
+        f"ערוץ נוכחי: {channel_label}",
         f"תאריך ושעה (ישראל): {current_datetime}",
     ]
     if cal_section:
