@@ -10,7 +10,7 @@ from config import settings
 from database import ActionLog, AsyncSessionLocal, GroupInteraction, GroupMember, PendingAction, VoicePreference
 from models.schemas import IncomingMessage
 from services import whatsapp_service
-from services.claude_service import check_and_handle_approval, cleanup_stale_pending, execute_approved_action, process_message
+from services.claude_service import check_and_handle_approval, cleanup_stale_pending, execute_approved_action, process_message, update_last_response_format
 from services.security_service import detect_injection, extract_email, handle_injection_attempt, is_owner
 from services.tts_service import should_use_voice
 
@@ -174,11 +174,9 @@ async def _handle_message(msg: IncomingMessage) -> None:
     # =======================================================================
 
     # --- Voice feedback detection ---
-    feedback = ""
-    if any(kw in lower for kw in _VOICE_POSITIVE):
-        feedback = "positive"
-    elif any(kw in lower for kw in _VOICE_NEGATIVE):
-        feedback = "negative"
+    force_text  = any(kw in lower for kw in _VOICE_NEGATIVE)   # "תכתוב", "בטקסט", …
+    force_voice = any(kw in lower for kw in _VOICE_POSITIVE)   # "תקריא", …
+    feedback = "negative" if force_text else ("positive" if force_voice else "")
     if feedback:
         await _log_voice_preference("feedback", used_voice=feedback == "positive", feedback=feedback)
 
@@ -201,9 +199,15 @@ async def _handle_message(msg: IncomingMessage) -> None:
             channel="whatsapp",
         )
 
-        # Decide voice vs text
-        use_voice = should_use_voice(response_text, was_voice_input=was_voice_input)
-        logger.info(f"[VOICE] use_voice={use_voice} was_voice={was_voice_input} words={len(response_text.split())} is_group={msg.is_group}")
+        # Decide voice vs text — explicit user preference overrides auto-detection
+        auto_voice = should_use_voice(response_text, was_voice_input=was_voice_input)
+        if force_text:
+            use_voice = False
+        elif force_voice:
+            use_voice = True
+        else:
+            use_voice = auto_voice
+        logger.info(f"[VOICE] use_voice={use_voice} was_voice={was_voice_input} force_text={force_text} force_voice={force_voice} words={len(response_text.split())}")
         await _log_voice_preference("message", used_voice=use_voice)
 
         if use_voice and not msg.is_group:
@@ -212,6 +216,9 @@ async def _handle_message(msg: IncomingMessage) -> None:
         else:
             await whatsapp_service.send_message(response_text, chat_id=reply_chat_id)
 
+        fmt_used = "voice" if (use_voice and not msg.is_group) else "text"
+        await update_last_response_format("whatsapp", fmt_used)
+
         # Background self-reflection (non-blocking)
         import asyncio
         from services.reflection_service import reflect_on_response
@@ -219,7 +226,7 @@ async def _handle_message(msg: IncomingMessage) -> None:
             message_in=text,
             response_out=response_text,
             tool_used=tool_used,
-            format_used="voice" if (use_voice and not msg.is_group) else "text",
+            format_used=fmt_used,
         ))
 
     except Exception as e:

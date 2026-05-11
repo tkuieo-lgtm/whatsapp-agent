@@ -203,6 +203,20 @@ _TOOLS_DM: List[Dict] = [
             "required": ["query"],
         },
     },
+    {
+        "name": "save_system_preference",
+        "description": "שמור העדפה קבועה של הבעלים ב-system_notes. קרא לכלי זה אוטומטית כשהמשתמש מביע העדפה קבועה (שעות פנויות, סגנון תקשורת, כלל קבוע) — אפילו בלי לבקש במפורש לשמור.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "preference": {
+                    "type": "string",
+                    "description": "ניסוח קצר וברור של ההעדפה בעברית, לדוגמה: 'לא זמין בימי שישי אחרי 14:00'",
+                },
+            },
+            "required": ["preference"],
+        },
+    },
 ]
 
 # Group chats — no personal data tools
@@ -266,6 +280,25 @@ async def _create_pending_action(action_type: str, payload: Dict, channel: str =
         await session.commit()
         await session.refresh(action)
         return str(action.id)
+
+
+async def update_last_response_format(channel: str, fmt: str) -> None:
+    """Annotate the last assistant history entry with its delivery format (voice/text)."""
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(ConversationHistory)
+                .where(ConversationHistory.role == "assistant")
+                .where(ConversationHistory.channel == channel)
+                .order_by(ConversationHistory.created_at.desc())
+                .limit(1)
+            )
+            entry = result.scalar_one_or_none()
+            if entry:
+                entry.content = f"{entry.content}\n[נשלח כ: {fmt}]"
+                await session.commit()
+    except Exception as e:
+        logger.error(f"[HISTORY] Failed to mark format: {e}")
 
 
 async def cleanup_stale_pending(channel: str, max_age_minutes: int = 3) -> None:
@@ -417,6 +450,13 @@ async def _execute_tool(name: str, inp: Dict, is_group: bool = False, channel: s
                 await session.commit()
             formatted = remind_at.strftime("%d/%m/%Y %H:%M")
             return f"✅ תזכורת נקבעה: {inp['text']}\n🕐 {formatted}", False
+
+        if name == "save_system_preference":
+            from services.agent_state_service import append_system_preference
+            preference = inp["preference"]
+            await append_system_preference(preference)
+            logger.info(f"[PREF] Auto-saved: {preference!r}")
+            return f"✅ ההעדפה נשמרה: {preference}", False
 
         # --- Write tools (require approval unless auto-mode) ---
         if name in _WRITE_TOOLS:

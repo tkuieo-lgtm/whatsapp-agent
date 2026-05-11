@@ -137,6 +137,16 @@ function normalizeJid(jid) {
 }
 
 // ---------------------------------------------------------------------------
+// Bot JID helper — used for group mention detection
+// ---------------------------------------------------------------------------
+function getBotJid() {
+    if (!sock || !sock.user) return null;
+    // sock.user.id format: "972529439686:12@s.whatsapp.net"
+    const phone = sock.user.id.split(":")[0];
+    return `${phone}@s.whatsapp.net`;
+}
+
+// ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 let latestQR       = null;
@@ -251,10 +261,19 @@ async function connectToWhatsApp() {
 
                 const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
                 const textMention   = body.toLowerCase().includes(`@${BOT_NAME.toLowerCase()}`);
-                if (!textMention && mentionedJids.length === 0) continue;
+
+                // Check if the bot's own JID is in the mentioned list
+                const botJid = getBotJid();
+                const jidMention = botJid
+                    ? mentionedJids.some(j => j.split(":")[0] === botJid.split(":")[0])
+                    : mentionedJids.length > 0;
+
+                console.log(`[GROUP] ${jid} | sender=${senderPhone} | textMention=${textMention} jidMention=${jidMention}`);
+
+                if (!textMention && !jidMention) continue;
 
                 const cleaned = body.replace(new RegExp(`@${BOT_NAME}`, "gi"), "").trim();
-                console.log(`[GROUP] ${jid} | sender=${senderPhone} | ${cleaned.slice(0, 80)}`);
+                console.log(`[GROUP] mention detected — forwarding: ${cleaned.slice(0, 80)}`);
 
                 try {
                     await axios.post(`${BACKEND_URL}/webhook/message`, {

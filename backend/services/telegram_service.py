@@ -9,6 +9,9 @@ logger = logging.getLogger(__name__)
 
 _app = None   # global Telegram Application
 
+_VOICE_NEGATIVE = {"תכתוב", "בטקסט", "טקסט", "write"}
+_VOICE_POSITIVE = {"תקריא", "תגיד", "הקרא", "speak"}
+
 
 async def _send_voice_response(update, response_text: str) -> None:
     """Generate TTS and send as a Telegram voice note, or fall back to text."""
@@ -52,22 +55,71 @@ async def start_telegram_bot() -> None:
         await update.message.reply_text(f"שלום! אני {settings.bot_name} 👋 במה אוכל לעזור?")
 
     # ---------------------------------------------------------------------------
-    # Text messages
+    # Text messages (DM + groups)
     # ---------------------------------------------------------------------------
     async def handle_text(update: Update, context):
-        if not _is_owner(update):
-            return
+        chat = update.effective_chat
         text = update.message.text or ""
+        lower = text.lower()
+
+        # Detect @mention via message entities
+        bot_username = context.bot.username or ""
+        mention = any(
+            e.type == "mention"
+            and text[e.offset:e.offset + e.length].lstrip("@").lower() == bot_username.lower()
+            for e in (update.message.entities or [])
+        )
+
+        logger.info(f"[TELEGRAM] chat_type={chat.type} mention={mention} is_owner={_is_owner(update)}")
+
+        # --- Group message ---
+        if chat.type != "private":
+            if not mention and not _is_owner(update):
+                return  # ignore non-mention messages from non-owner in groups
+
+            if not _is_owner(update):
+                # Non-owner @mentioned the bot
+                await update.message.reply_text(
+                    "שלום! אני עוזר אישי פרטי ואינני זמין לחברים חיצוניים בקבוצות."
+                )
+                return
+
+            # Owner in group — strip @mention and process
+            cleaned = text.replace(f"@{bot_username}", "").strip()
+            if not cleaned:
+                return
+            text = cleaned
+
+        else:
+            # Private DM — must be owner
+            if not _is_owner(update):
+                return
+
         logger.info(f"[TELEGRAM] Text: {text[:60]}")
 
-        from services.claude_service import process_message
+        force_text  = any(kw in lower for kw in _VOICE_NEGATIVE)
+        force_voice = any(kw in lower for kw in _VOICE_POSITIVE)
+
+        from services.claude_service import process_message, update_last_response_format
         from services.tts_service import should_use_voice
         response, _ = await process_message(text, channel="telegram")
 
-        if should_use_voice(response, was_voice_input=False):
+        auto_voice = should_use_voice(response, was_voice_input=False)
+        if force_text:
+            use_voice = False
+        elif force_voice:
+            use_voice = True
+        else:
+            use_voice = auto_voice
+
+        fmt_used = "text"
+        if use_voice:
             await _send_voice_response(update, response)
+            fmt_used = "voice"
         else:
             await update.message.reply_text(response)
+
+        await update_last_response_format("telegram", fmt_used)
 
     # ---------------------------------------------------------------------------
     # Voice notes (incoming)
@@ -78,7 +130,6 @@ async def start_telegram_bot() -> None:
         logger.info("[TELEGRAM] Received voice note — downloading…")
         tmp_path = None
         try:
-            # Download the voice file
             voice_file = await update.message.voice.get_file()
             tmp_fd, tmp_path = tempfile.mkstemp(suffix=".ogg")
             os.close(tmp_fd)
@@ -89,7 +140,6 @@ async def start_telegram_bot() -> None:
 
             logger.info(f"[TELEGRAM] Downloaded {os.path.getsize(tmp_path)} bytes, transcribing…")
 
-            # Transcribe with Groq — no prefix shown to user
             from services.voice_service import transcribe_voice
             text = await transcribe_voice(audio_b64, "audio/ogg")
             if not text:
@@ -98,10 +148,10 @@ async def start_telegram_bot() -> None:
 
             logger.info(f"[TELEGRAM] Transcribed: {text[:80]}")
 
-            # Process through Claude and reply with voice
-            from services.claude_service import process_message
+            from services.claude_service import process_message, update_last_response_format
             response, _ = await process_message(text, channel="telegram")
             await _send_voice_response(update, response)
+            await update_last_response_format("telegram", "voice")
 
         except Exception as e:
             logger.error(f"[TELEGRAM] Voice error: {type(e).__name__}: {e}")
@@ -133,9 +183,10 @@ async def start_telegram_bot() -> None:
                 await update.message.reply_text("לא הצלחתי להבין, נסה שוב 🎤")
                 return
 
-            from services.claude_service import process_message
+            from services.claude_service import process_message, update_last_response_format
             response, _ = await process_message(text, channel="telegram")
             await _send_voice_response(update, response)
+            await update_last_response_format("telegram", "voice")
 
         except Exception as e:
             logger.error(f"[TELEGRAM] Audio error: {type(e).__name__}: {e}")
@@ -152,7 +203,7 @@ async def start_telegram_bot() -> None:
     await _app.initialize()
     await _app.start()
     await _app.updater.start_polling(drop_pending_updates=True)
-    logger.info("[TELEGRAM] Bot started polling (voice I/O enabled)")
+    logger.info("[TELEGRAM] Bot started polling (voice I/O + group support enabled)")
 
 
 async def stop_telegram_bot() -> None:

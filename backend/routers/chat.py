@@ -435,24 +435,30 @@ async def chat_send(body: ChatMessage):
         _recent[key] = (result, now)
         return result
 
-    # Detect explicit speak request ("תקריא לי", "תגיד לי" etc.)
-    _SPEAK_WORDS = ["תקריא", "תגיד", "הקרא", "read aloud", "speak"]
+    # Detect explicit speak/text requests
+    _SPEAK_WORDS  = ["תקריא", "תגיד", "הקרא", "read aloud", "speak"]
+    _TEXT_WORDS   = ["תכתוב", "בטקסט", "טקסט", "write"]
     speak_requested = any(kw in text for kw in _SPEAK_WORDS)
+    text_requested  = any(kw in text for kw in _TEXT_WORDS)
 
     # --- Process ---
     response_text, _ = await process_message(text, channel="web")
 
-    # --- TTS when: user sent voice OR explicitly asked to read aloud ---
+    # --- TTS when: voice input, explicit "תקריא", but NOT if user said "תכתוב" ---
     response_audio = None
     auto_speak = False
-    if was_voice or speak_requested:
+    if (was_voice or speak_requested) and not text_requested:
         try:
             from services.tts_service import text_to_speech
             audio_bytes = await text_to_speech(response_text)
             response_audio = base64.b64encode(audio_bytes).decode()
-            auto_speak = speak_requested   # auto-play only for explicit "תקריא" requests
+            auto_speak = speak_requested
         except Exception as e:
             logger.warning(f"[CHAT] TTS failed: {e}")
+
+    fmt_used = "voice" if response_audio else "text"
+    from services.claude_service import update_last_response_format
+    await update_last_response_format("web", fmt_used)
 
     result: dict = {"response": response_text}
     if transcription:
@@ -460,7 +466,7 @@ async def chat_send(body: ChatMessage):
     if response_audio:
         result["audio"] = response_audio
     if auto_speak:
-        result["auto_speak"] = True   # tells frontend to play immediately
+        result["auto_speak"] = True
     _recent[key] = (result, now)
     return result
 
