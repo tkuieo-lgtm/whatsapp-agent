@@ -608,6 +608,8 @@ async def process_message(
         else:
             user_role = "group_unregistered"
 
+        logger.info(f"[PROCESS] channel=group user_role={user_role!r} group_sender={group_sender!r}")
+
         system = _build_prompt(
             channel="group",
             user_role=user_role,
@@ -618,6 +620,7 @@ async def process_message(
         tools = _TOOLS_GROUP
     else:
         # Owner DM on any channel (whatsapp, web, telegram)
+        logger.info(f"[PROCESS] channel={channel!r} user_role=owner is_group={is_group}")
         from services.memory_service import load_context_for_message
         from services.calendar_service import get_calendar_list_for_prompt
         memory_context = await load_context_for_message(user_message)
