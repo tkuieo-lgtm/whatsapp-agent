@@ -161,6 +161,8 @@ def build_system_prompt(
     calendar_list: str = "",
     memory_context: str = "",
     group_member: Optional[dict] = None,    # {"name": ..., "phone": ...}
+    system_notes: str = "",                 # admin-editable, from settings table
+    group_summary: str = "",                # auto-generated from group_members table
 ) -> str:
     """
     Single source of truth for all system prompts.
@@ -234,6 +236,10 @@ def build_system_prompt(
         parts.append(cal_section)
     if mem_section:
         parts.append(mem_section)
+    if group_summary:
+        parts.append(f"\n{group_summary}")
+    if system_notes:
+        parts.append(f"\n## הערות מנהל\n{system_notes}")
 
     prompt = "\n".join(parts)
     logger.info(f"[PROMPT] channel={channel!r} role={user_role!r} length={len(prompt)}")

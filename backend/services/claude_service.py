@@ -623,8 +623,11 @@ async def process_message(
         logger.info(f"[PROCESS] channel={channel!r} user_role=owner is_group={is_group}")
         from services.memory_service import load_context_for_message
         from services.calendar_service import get_calendar_list_for_prompt
+        from services.agent_state_service import get_system_notes, get_group_member_summary
         memory_context = await load_context_for_message(user_message)
         calendar_list = await get_calendar_list_for_prompt()
+        system_notes = await get_system_notes()
+        group_summary = await get_group_member_summary()
         system = _build_prompt(
             channel=channel,
             user_role="owner",
@@ -632,6 +635,8 @@ async def process_message(
             bot_name=settings.bot_name,
             calendar_list=calendar_list,
             memory_context=memory_context,
+            system_notes=system_notes,
+            group_summary=group_summary,
         )
         tools = _TOOLS_DM
 
