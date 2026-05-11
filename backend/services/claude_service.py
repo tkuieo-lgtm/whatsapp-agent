@@ -206,11 +206,14 @@ _TOOLS_DM: List[Dict] = [
 ]
 
 # Group chats — no personal data tools
+# Group tools: calendar read-only (free/busy answers) + recall only.
+# web_search removed — requires OWNER approval, handled via DM.
+# send_email, create_event etc. are never available in groups.
 _TOOLS_GROUP: List[Dict] = [
     t for t in _TOOLS_DM
     if t["name"] in {
         "get_todays_events", "get_tomorrows_events", "get_weeks_events",
-        "web_search", "recall",
+        "recall",
     }
 ]
 
