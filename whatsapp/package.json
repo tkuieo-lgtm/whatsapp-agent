@@ -1,18 +1,19 @@
 {
   "name": "whatsapp-agent-bridge",
-  "version": "1.0.0",
-  "description": "WhatsApp Web.js bridge for the AI agent",
+  "version": "2.0.0",
+  "description": "Baileys-based WhatsApp bridge for the AI agent",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^6.7.18",
     "axios": "^1.7.0",
     "dotenv": "^17.4.2",
     "express": "^4.19.0",
     "pg": "^8.13.0",
-    "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.26.0"
+    "qrcode": "^1.5.4"
   },
   "engines": {
     "node": ">=18"
