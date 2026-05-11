@@ -140,6 +140,10 @@ async function main() {
   // ── 2. Restore WhatsApp session from DB ────────────────────────────────
   await restoreSessionFromDB();
 
+  // Ensure session directory exists before client.initialize() tries to write
+  fs.mkdirSync(`${SESSION_DIR}/session`, { recursive: true });
+  console.log(`[SESSION] Ensured directory: ${SESSION_DIR}/session`);
+
   // ---------------------------------------------------------------------------
   // WhatsApp client
   // ---------------------------------------------------------------------------
@@ -160,9 +164,11 @@ async function main() {
   });
 
   client.on("authenticated", async () => {
-    console.log("[WHATSAPP] Authenticated — saving session to DB…");
-    // Small delay to let LocalAuth write files first
-    setTimeout(() => saveSessionToDB(), 3000);
+    console.log("[WHATSAPP] Authenticated — saving session to DB in 3s…");
+    setTimeout(async () => {
+      await saveSessionToDB();
+      console.log("[SESSION] Post-auth save complete — check for 'Saved N files' above");
+    }, 3000);
   });
 
   let _reconnectAttempts = 0;
