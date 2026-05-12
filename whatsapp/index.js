@@ -6,7 +6,6 @@ const {
     useMultiFileAuthState,
     fetchLatestBaileysVersion,
     downloadMediaMessage,
-    makeInMemoryStore,
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const express = require("express");
@@ -139,23 +138,15 @@ function normalizeJid(jid) {
 
 // ---------------------------------------------------------------------------
 // @lid resolver — WhatsApp multi-device sends @lid instead of phone JIDs.
-// We build a lid→phoneJid map from contacts.upsert (fires on connect sync).
+// lidMap is built from contacts.upsert events that Baileys fires on connect.
+// makeInMemoryStore was removed in baileys v6.7+ so we maintain our own map.
 // ---------------------------------------------------------------------------
-const store  = makeInMemoryStore({ logger: silentLogger });
 const lidMap = new Map();   // "39183020240999@lid" → "972546670073@s.whatsapp.net"
 
 function resolveJid(jid) {
     if (!jid || !jid.endsWith("@lid")) return jid;
-    // 1. Check our explicit map (populated from contacts.upsert)
     if (lidMap.has(jid)) return lidMap.get(jid);
-    // 2. Fall back to searching store.contacts
-    for (const [phoneJid, contact] of Object.entries(store.contacts || {})) {
-        if (contact.lid === jid) {
-            lidMap.set(jid, phoneJid);
-            return phoneJid;
-        }
-    }
-    console.warn(`[LID] Cannot resolve ${jid} — contact not yet synced`);
+    console.warn(`[LID] Cannot resolve ${jid} — not yet in contact map`);
     return jid;   // return as-is; owner check will fail gracefully
 }
 
@@ -231,9 +222,6 @@ async function connectToWhatsApp() {
         // Required for message retry decryption — without this some messages are silently dropped
         getMessage: async (_key) => ({ conversation: "" }),
     });
-
-    // Bind in-memory store so contacts map stays populated across messages
-    store.bind(sock.ev);
 
     // Build lid→phone map from contact sync (fires during connection init)
     sock.ev.on("contacts.upsert", (contacts) => {
