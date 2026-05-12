@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 
 from config import settings
 from database import ActionLog, AsyncSessionLocal, Reminder
-from services import calendar_service, gmail_service, whatsapp_service
+from services import calendar_service, gmail_service, whatsapp_service  # gmail+wa used by morning/weekly summaries
 from services.rules_engine import run_email_rules
 from services.reminder_service import check_and_send_reminders
 
@@ -110,32 +110,9 @@ async def _weekly_summary() -> None:
         logger.error(f"[SCHEDULER] Weekly summary failed: {e}")
 
 
-async def _check_email_reminders() -> None:
-    try:
-        emails = await gmail_service.get_emails_awaiting_reply(
-            hours_threshold=settings.reminder_threshold_hours
-        )
-        for em in emails:
-            msg = (
-                f"📬 *תזכורת:* מייל מ-{em['from']} ממתין לתשובה\n"
-                f"נושא: \"{em['subject']}\""
-            )
-            await whatsapp_service.send_message(msg)
-    except Exception as e:
-        logger.error(f"[SCHEDULER] Email reminder check failed: {e}")
-
-
-async def _check_proactive_alerts() -> None:
-    """Every 30 min: notify about urgent new emails."""
-    try:
-        urgent = await gmail_service.get_recent_urgent_emails(minutes=35)
-        for em in urgent:
-            msg = f"🚨 *מייל דחוף:*\n*מ:* {em['from']}\n*נושא:* {em['subject']}"
-            await whatsapp_service.send_message(msg)
-        if urgent:
-            logger.info(f"[ALERTS] Sent {len(urgent)} urgent email alerts")
-    except Exception as e:
-        logger.error(f"[ALERTS] Proactive check failed: {e}")
+# _check_email_reminders and _check_proactive_alerts removed —
+# unsolicited email notifications are not user-requested behavior.
+# The agent responds to emails only when explicitly asked.
 
 
 # ---------------------------------------------------------------------------
@@ -165,11 +142,6 @@ def setup_scheduler() -> None:
         id="weekly_summary",
     )
     scheduler.add_job(
-        _check_email_reminders,
-        CronTrigger(hour=f"*/{settings.reminder_check_hours}", minute=0, timezone=tz),
-        id="email_reminders",
-    )
-    scheduler.add_job(
         run_email_rules,
         CronTrigger(minute="*/15", timezone=tz),
         id="email_rules",
@@ -178,11 +150,6 @@ def setup_scheduler() -> None:
         check_and_send_reminders,
         CronTrigger(minute="*", timezone=tz),
         id="reminders",
-    )
-    scheduler.add_job(
-        _check_proactive_alerts,
-        CronTrigger(minute="*/30", timezone=tz),
-        id="proactive_alerts",
     )
     scheduler.start()
     logger.info("[SCHEDULER] All jobs scheduled.")

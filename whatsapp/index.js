@@ -225,12 +225,18 @@ async function connectToWhatsApp() {
 
     // Build lid→phone map from contact sync (fires during connection init)
     sock.ev.on("contacts.upsert", (contacts) => {
+        console.log(`[LID] contacts.upsert fired: ${contacts.length} contact(s)`);
         for (const c of contacts) {
+            // Log every contact so we can see what fields are available
+            if (c.lid || c.id?.endsWith("@lid")) {
+                console.log(`[LID] Contact with lid: id=${c.id} lid=${c.lid} name=${c.name || c.notify || "?"}`);
+            }
             if (c.id && c.lid) {
                 lidMap.set(c.lid, c.id);
                 console.log(`[LID] Mapped ${c.lid} → ${c.id}`);
             }
         }
+        console.log(`[LID] Map now has ${lidMap.size} entries`);
     });
 
     // Persist credentials on every update — debounced to prevent DB flooding
