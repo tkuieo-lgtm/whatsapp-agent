@@ -202,9 +202,11 @@ async function connectToWhatsApp() {
         auth: state,
         printQRInTerminal: true,
         logger: silentLogger,
-        browser: ["Chrome (Linux)", "Chrome", "120.0.0.0"],
+        browser: ["Ubuntu", "Chrome", "20.0.04"],  // less likely to trigger WA restrictions
         syncFullHistory: false,
-        keepAliveIntervalMs: 20_000,   // Baileys built-in WS ping every 20 s
+        keepAliveIntervalMs: 20_000,
+        // Required for message retry decryption — without this some messages are silently dropped
+        getMessage: async (_key) => ({ conversation: "" }),
     });
 
     // Persist credentials on every update — debounced to prevent DB flooding
@@ -279,11 +281,19 @@ async function connectToWhatsApp() {
     // Incoming messages
     // ---------------------------------------------------------------------------
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
-        if (type !== "notify") return;
+        // Raw diagnostic log — before ANY filtering
+        console.log(`[MSG] Raw event received: ${messages.length} message(s), type=${type}`);
 
         for (const msg of messages) {
-            if (msg.key.fromMe) continue;
-            if (!msg.message) continue;
+            const rawJid  = msg.key?.remoteJid || "?";
+            const fromMe  = msg.key?.fromMe;
+            const hasBody = !!msg.message;
+            const msgType = Object.keys(msg.message || {})[0] || "none";
+            console.log(`[MSG] id=${msg.key?.id?.slice(-8)} jid=${rawJid} fromMe=${fromMe} hasBody=${hasBody} type=${msgType} upsertType=${type}`);
+
+            if (type !== "notify") continue;   // skip history replay (type="append")
+            if (fromMe) continue;
+            if (!hasBody) continue;
 
             const msgId = msg.key.id;
             if (seen.has(msgId)) continue;
