@@ -242,3 +242,19 @@ async def receive_message(msg: IncomingMessage, background_tasks: BackgroundTask
 
     background_tasks.add_task(_handle_message, msg)
     return {"ok": True}
+
+
+@router.post("/webhook/alert")
+async def receive_alert(body: dict):
+    """Internal alert from WhatsApp bridge (e.g. max retries reached) — forward to owner via Telegram."""
+    source  = body.get("source", "unknown")
+    message = body.get("message", "")
+    logger.error(f"[ALERT] from={source}: {message}")
+    try:
+        from services.telegram_service import _app as tg_app
+        if tg_app and settings.owner_telegram_id:
+            await tg_app.bot.send_message(chat_id=settings.owner_telegram_id, text=message)
+            logger.info("[ALERT] Forwarded to owner via Telegram")
+    except Exception as e:
+        logger.warning(f"[ALERT] Telegram notify failed: {e}")
+    return {"ok": True}

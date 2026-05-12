@@ -147,15 +147,31 @@ function getBotJid() {
 }
 
 // ---------------------------------------------------------------------------
+// Session save — debounced to prevent DB flooding on creds.update storms
+// ---------------------------------------------------------------------------
+let _saveTimer   = null;
+let _failedState = false;   // set when max retries reached
+
+function scheduleSave() {
+    if (_saveTimer) return;   // already pending — skip
+    _saveTimer = setTimeout(async () => {
+        _saveTimer = null;
+        await saveSessionToDB();
+    }, 30_000);   // 30 s debounce
+}
+
+// ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-let latestQR       = null;
-let sock           = null;
-let isConnected    = false;
+let latestQR          = null;
+let sock              = null;
+let isConnected       = false;
+let keepAliveInterval = null;
 let reconnectAttempts = 0;
-const BACKOFF_MS   = [30_000, 60_000, 120_000];
-const MAX_BACKOFF  = 5 * 60_000;
-const seen         = new Set();
+const MAX_RECONNECT   = 10;
+const BACKOFF_MS      = [30_000, 60_000, 120_000];
+const MAX_BACKOFF     = 5 * 60_000;
+const seen            = new Set();
 
 function markSeen(id) {
     seen.add(id);
@@ -188,12 +204,13 @@ async function connectToWhatsApp() {
         logger: silentLogger,
         browser: ["Chrome (Linux)", "Chrome", "120.0.0.0"],
         syncFullHistory: false,
+        keepAliveIntervalMs: 20_000,   // Baileys built-in WS ping every 20 s
     });
 
-    // Persist credentials on every update
+    // Persist credentials on every update — debounced to prevent DB flooding
     sock.ev.on("creds.update", async () => {
         await saveCreds();
-        await saveSessionToDB();
+        scheduleSave();   // debounced 30 s — NOT immediate
     });
 
     // Connection lifecycle
@@ -204,15 +221,26 @@ async function connectToWhatsApp() {
         }
 
         if (connection === "open") {
-            latestQR = null;
-            isConnected = true;
+            latestQR      = null;
+            isConnected   = true;
             reconnectAttempts = 0;
+            _failedState  = false;
             console.log(`[WHATSAPP] ${BOT_NAME} connected!`);
-            await saveSessionToDB();
+            await saveSessionToDB();   // immediate save on successful connect
+
+            // Manual keepalive: send presence update every 20 s
+            if (keepAliveInterval) clearInterval(keepAliveInterval);
+            keepAliveInterval = setInterval(async () => {
+                if (!isConnected || !sock) return;
+                try { await sock.sendPresenceUpdate("available"); }
+                catch (_) { /* ignore — WS ping failures are non-fatal */ }
+            }, 20_000);
         }
 
         if (connection === "close") {
             isConnected = false;
+            if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
+
             const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
             console.log(`[WHATSAPP] Disconnected — code: ${code}`);
 
@@ -223,12 +251,25 @@ async function connectToWhatsApp() {
                     try { await pool.query("DELETE FROM whatsapp_sessions WHERE id=$1", ["main"]); }
                     catch (e) { console.error("[SESSION] Clear error:", e.message); }
                 }
-                // Reconnect from scratch (will show QR)
+                reconnectAttempts = 0;
                 setTimeout(() => connectToWhatsApp(), 3000);
+
+            } else if (reconnectAttempts >= MAX_RECONNECT) {
+                _failedState = true;
+                console.error(`[WHATSAPP] Max reconnect attempts (${MAX_RECONNECT}) reached — halting.`);
+                console.error("[WHATSAPP] Visit /qr to scan a new QR code and restart the session.");
+                // Notify backend so it can alert the owner via Telegram
+                try {
+                    await axios.post(`${BACKEND_URL}/webhook/alert`, {
+                        source: "whatsapp_bridge",
+                        message: `⚠️ WhatsApp bridge נכשל לאחר ${MAX_RECONNECT} ניסיונות (קוד ${code}). נדרשת סריקת QR חדשה.`,
+                    }, { timeout: 5000 });
+                } catch (_) {}
+
             } else {
                 const delay = BACKOFF_MS[reconnectAttempts] ?? MAX_BACKOFF;
                 reconnectAttempts++;
-                console.log(`[WHATSAPP] Reconnect attempt ${reconnectAttempts} in ${delay / 1000}s…`);
+                console.log(`[WHATSAPP] Reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT} in ${delay / 1000}s… (code ${code})`);
                 setTimeout(() => connectToWhatsApp(), delay);
             }
         }
@@ -338,8 +379,8 @@ async function connectToWhatsApp() {
         }
     });
 
-    // Periodic session backup every 5 minutes
-    setInterval(() => saveSessionToDB(), 5 * 60 * 1000);
+    // Periodic session backup every 10 minutes (belt-and-suspenders for the debounce)
+    setInterval(() => { if (isConnected) saveSessionToDB(); }, 10 * 60 * 1000);
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +392,13 @@ app.use(express.json({ limit: "50mb" }));
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
 app.get("/status", (_req, res) =>
-    res.json({ whatsapp: isConnected ? "connected" : "disconnected", connected: isConnected })
+    res.json({
+        whatsapp: isConnected ? "connected" : (_failedState ? "failed" : "disconnected"),
+        connected: isConnected,
+        reconnectAttempts,
+        maxReconnect: MAX_RECONNECT,
+        failed: _failedState,
+    })
 );
 
 app.post("/send", async (req, res) => {
