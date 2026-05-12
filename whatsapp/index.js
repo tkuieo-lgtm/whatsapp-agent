@@ -6,6 +6,7 @@ const {
     useMultiFileAuthState,
     fetchLatestBaileysVersion,
     downloadMediaMessage,
+    makeInMemoryStore,
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const express = require("express");
@@ -137,6 +138,28 @@ function normalizeJid(jid) {
 }
 
 // ---------------------------------------------------------------------------
+// @lid resolver — WhatsApp multi-device sends @lid instead of phone JIDs.
+// We build a lid→phoneJid map from contacts.upsert (fires on connect sync).
+// ---------------------------------------------------------------------------
+const store  = makeInMemoryStore({ logger: silentLogger });
+const lidMap = new Map();   // "39183020240999@lid" → "972546670073@s.whatsapp.net"
+
+function resolveJid(jid) {
+    if (!jid || !jid.endsWith("@lid")) return jid;
+    // 1. Check our explicit map (populated from contacts.upsert)
+    if (lidMap.has(jid)) return lidMap.get(jid);
+    // 2. Fall back to searching store.contacts
+    for (const [phoneJid, contact] of Object.entries(store.contacts || {})) {
+        if (contact.lid === jid) {
+            lidMap.set(jid, phoneJid);
+            return phoneJid;
+        }
+    }
+    console.warn(`[LID] Cannot resolve ${jid} — contact not yet synced`);
+    return jid;   // return as-is; owner check will fail gracefully
+}
+
+// ---------------------------------------------------------------------------
 // Bot JID helper — used for group mention detection
 // ---------------------------------------------------------------------------
 function getBotJid() {
@@ -207,6 +230,19 @@ async function connectToWhatsApp() {
         keepAliveIntervalMs: 20_000,
         // Required for message retry decryption — without this some messages are silently dropped
         getMessage: async (_key) => ({ conversation: "" }),
+    });
+
+    // Bind in-memory store so contacts map stays populated across messages
+    store.bind(sock.ev);
+
+    // Build lid→phone map from contact sync (fires during connection init)
+    sock.ev.on("contacts.upsert", (contacts) => {
+        for (const c of contacts) {
+            if (c.id && c.lid) {
+                lidMap.set(c.lid, c.id);
+                console.log(`[LID] Mapped ${c.lid} → ${c.id}`);
+            }
+        }
     });
 
     // Persist credentials on every update — debounced to prevent DB flooding
@@ -299,10 +335,16 @@ async function connectToWhatsApp() {
             if (seen.has(msgId)) continue;
             markSeen(msgId);
 
-            const jid      = msg.key.remoteJid || "";
-            const isGroup  = jid.endsWith("@g.us");
-            const senderJid = isGroup ? (msg.key.participant || jid) : jid;
+            const rawJid    = msg.key.remoteJid || "";
+            const isGroup   = rawJid.endsWith("@g.us");
+            // Resolve @lid → @s.whatsapp.net for both DM and group participant JIDs
+            const jid       = isGroup ? rawJid : resolveJid(rawJid);
+            const rawSender = isGroup ? (msg.key.participant || rawJid) : rawJid;
+            const senderJid = resolveJid(rawSender);
             const senderPhone = jidToPhone(senderJid);
+            if (rawJid !== jid || rawSender !== senderJid) {
+                console.log(`[LID] Resolved: ${rawJid} → ${jid} | sender ${rawSender} → ${senderJid}`);
+            }
 
             // --- GROUP ---
             if (isGroup) {
