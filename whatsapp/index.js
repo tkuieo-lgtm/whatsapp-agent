@@ -138,8 +138,8 @@ function normalizeJid(jid) {
 
 // ---------------------------------------------------------------------------
 // @lid resolver — WhatsApp multi-device sends @lid instead of phone JIDs.
-// lidMap is built from contacts.upsert events that Baileys fires on connect.
-// makeInMemoryStore was removed in baileys v6.7+ so we maintain our own map.
+// lidMap is built from contacts.upsert + explicit sock.onWhatsApp() lookup.
+// Mapping is persisted in DB so it survives restarts.
 // ---------------------------------------------------------------------------
 const lidMap = new Map();   // "39183020240999@lid" → "972546670073@s.whatsapp.net"
 
@@ -147,7 +147,61 @@ function resolveJid(jid) {
     if (!jid || !jid.endsWith("@lid")) return jid;
     if (lidMap.has(jid)) return lidMap.get(jid);
     console.warn(`[LID] Cannot resolve ${jid} — not yet in contact map`);
-    return jid;   // return as-is; owner check will fail gracefully
+    return jid;
+}
+
+async function _saveLidToDB(lid, phoneJid) {
+    const pool = getPool();
+    if (!pool) return;
+    try {
+        await ensureSessionTable(pool);
+        await pool.query(
+            `INSERT INTO whatsapp_sessions (id,data,updated_at) VALUES ('owner_lid',$1,NOW())
+             ON CONFLICT (id) DO UPDATE SET data=$1, updated_at=NOW()`,
+            [JSON.stringify({ lid, phoneJid })]
+        );
+    } catch (e) {
+        console.error("[LID] DB save failed:", e.message);
+    }
+}
+
+async function _loadLidFromDB() {
+    const pool = getPool();
+    if (!pool) return;
+    try {
+        await ensureSessionTable(pool);
+        const { rows } = await pool.query(
+            "SELECT data FROM whatsapp_sessions WHERE id='owner_lid'"
+        );
+        if (rows.length) {
+            const { lid, phoneJid } = JSON.parse(rows[0].data);
+            lidMap.set(lid, phoneJid);
+            console.log(`[LID] Loaded from DB: ${lid} → ${phoneJid}`);
+        }
+    } catch (e) {
+        console.error("[LID] DB load failed:", e.message);
+    }
+}
+
+async function resolveOwnerLid() {
+    if (!sock || !isConnected) return;
+    try {
+        const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
+        const results  = await sock.onWhatsApp(OWNER_PHONE);
+        if (!results || !results.length) {
+            console.warn("[LID] sock.onWhatsApp returned empty — owner not on WA?");
+            return;
+        }
+        const info = results[0];
+        console.log(`[LID] onWhatsApp result: exists=${info.exists} jid=${info.jid} lid=${info.lid}`);
+        if (info.lid) {
+            lidMap.set(info.lid, ownerJid);
+            await _saveLidToDB(info.lid, ownerJid);
+            console.log(`[LID] Owner LID mapped: ${info.lid} → ${ownerJid}`);
+        }
+    } catch (e) {
+        console.warn(`[LID] resolveOwnerLid failed: ${e.message}`);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +312,10 @@ async function connectToWhatsApp() {
             reconnectAttempts = 0;
             _failedState  = false;
             console.log(`[WHATSAPP] ${BOT_NAME} connected!`);
-            await saveSessionToDB();   // immediate save on successful connect
+            await saveSessionToDB();
+
+            // Resolve owner's @lid immediately after connect
+            setTimeout(resolveOwnerLid, 3000);
 
             // Manual keepalive: send presence update every 20 s
             if (keepAliveInterval) clearInterval(keepAliveInterval);
@@ -480,6 +537,34 @@ app.post("/send-voice", async (req, res) => {
     }
 });
 
+app.post("/reset-session", async (_req, res) => {
+    console.log("[SESSION] Reset requested — clearing session and reconnecting");
+    // 1. Delete from DB
+    const pool = getPool();
+    if (pool) {
+        try { await pool.query("DELETE FROM whatsapp_sessions WHERE id IN ('main','owner_lid')"); }
+        catch (e) { console.error("[SESSION] DB delete error:", e.message); }
+    }
+    // 2. Delete local session files
+    if (fs.existsSync(SESSION_DIR)) {
+        fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+        console.log("[SESSION] Local session files deleted");
+    }
+    // 3. Clear LID map
+    lidMap.clear();
+    // 4. Close existing socket and reconnect
+    if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
+    isConnected = false;
+    reconnectAttempts = 0;
+    _failedState = false;
+    if (sock) {
+        try { sock.ev.removeAllListeners(); await sock.ws?.close(); } catch (_) {}
+        sock = null;
+    }
+    res.json({ success: true, message: "Session cleared — scan QR at /qr" });
+    setTimeout(() => connectToWhatsApp(), 1000);
+});
+
 app.get("/qr", async (_req, res) => {
     if (isConnected) {
         return res.send(
@@ -513,6 +598,7 @@ app.get("/qr", async (_req, res) => {
 // ---------------------------------------------------------------------------
 async function main() {
     await restoreSessionFromDB();
+    await _loadLidFromDB();   // restore owner LID mapping if previously saved
 
     await new Promise((resolve) => {
         app.listen(PORT, "0.0.0.0", () => {
