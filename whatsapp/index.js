@@ -321,11 +321,10 @@ async function connectToWhatsApp() {
         console.log(`[MSG] Raw event received: ${messages.length} message(s), type=${type}`);
 
         for (const msg of messages) {
-            const rawJid  = msg.key?.remoteJid || "?";
             const fromMe  = msg.key?.fromMe;
             const hasBody = !!msg.message;
             const msgType = Object.keys(msg.message || {})[0] || "none";
-            console.log(`[MSG] id=${msg.key?.id?.slice(-8)} jid=${rawJid} fromMe=${fromMe} hasBody=${hasBody} type=${msgType} upsertType=${type}`);
+            console.log(`[MSG] id=${msg.key?.id?.slice(-8)} jid=${msg.key?.remoteJid} fromMe=${fromMe} hasBody=${hasBody} type=${msgType} upsertType=${type}`);
 
             if (type !== "notify") continue;   // skip history replay (type="append")
             if (fromMe) continue;
