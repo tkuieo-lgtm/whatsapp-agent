@@ -47,16 +47,17 @@ async def _ev_send_audio(number: str, audio_b64: str) -> None:
         f"{settings.evolution_api_url.rstrip('/')}"
         f"/message/sendWhatsAppAudio/{settings.evolution_instance}"
     )
-    # Evolution API v2 flat format
+    # encoding=False — audio is already ogg/opus (WhatsApp native format),
+    # no re-encoding needed. encoding=True caused PENDING/never-sent.
     payload = {
         "number": number,
         "audio": audio_b64,
-        "encoding": True,
+        "encoding": False,
     }
     headers = {"apikey": settings.evolution_api_key or ""}
     logger.info(
         f"[EVOLUTION] Sending audio payload: number={number!r} "
-        f"encoding=True audio_len={len(audio_b64)} url={url}"
+        f"encoding=False audio_len={len(audio_b64)} url={url}"
     )
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(url, json=payload, headers=headers)
