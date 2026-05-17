@@ -302,7 +302,11 @@ async function connectToWhatsApp() {
     });
 
     // Connection lifecycle
-    sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+    sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr, isNewLogin, receivedPendingNotifications }) => {
+        const code = lastDisconnect ? new Boom(lastDisconnect?.error)?.output?.statusCode : null;
+        console.log(`[CONN] connection=${connection ?? "-"} qr=${!!qr} code=${code ?? "-"} isNewLogin=${isNewLogin ?? "-"} pendingNotif=${receivedPendingNotifications ?? "-"}`);
+        if (lastDisconnect?.error) console.log(`[CONN] error: ${lastDisconnect.error.message ?? lastDisconnect.error}`);
+
         if (qr) {
             if (USE_PAIRING_CODE && !state.creds.registered) {
                 // qr event = socket connected, WhatsApp waiting for auth.
