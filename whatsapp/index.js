@@ -238,6 +238,7 @@ let sock                  = null;
 let isConnected           = false;
 let connectionState       = "disconnected";   // "disconnected" | "connecting" | "open"
 let deviceReady           = false;            // true after receivedPendingNotifications — safe to send
+let _pairingRequested     = false;            // pairing code requested once per session — don't re-request on new qr events
 let lastOwnerJid          = null;             // actual JID from the last owner DM (may be @lid)
 let keepAliveInterval     = null;
 let _sessionBackupInterval = null;   // module-level — only one interval ever
@@ -319,15 +320,24 @@ async function connectToWhatsApp() {
         if (qr) {
             if (connectionState === "open" || deviceReady) {
                 // Already connected — ignore spurious qr events (prevent accidental re-pairing)
-                console.warn("[PAIR] qr event ignored — already connected (state=open or deviceReady)");
+                console.warn("[PAIR] qr event ignored — already connected");
             } else if (USE_PAIRING_CODE && !state.creds.registered) {
-                try {
-                    const code = await sock.requestPairingCode(AGENT_PHONE);
-                    latestPairingCode = code;
-                    console.log(`[PAIR] Code for agent ${AGENT_PHONE}: ${code}`);
-                    console.log("[PAIR] WhatsApp → Settings → Linked Devices → Link with phone number");
-                } catch (e) {
-                    console.error("[PAIR] requestPairingCode failed:", e.message);
+                if (_pairingRequested) {
+                    // WhatsApp refreshes the QR every ~20s. Calling requestPairingCode again
+                    // would invalidate the current code. Request only once per session.
+                    console.log(`[PAIR] qr refresh ignored — code already issued (still valid ~160s)`);
+                } else {
+                    _pairingRequested = true;
+                    try {
+                        const code = await sock.requestPairingCode(AGENT_PHONE);
+                        latestPairingCode = code;
+                        console.log(`[PAIR] Code for agent ${AGENT_PHONE}: ${code}`);
+                        console.log("[PAIR] WhatsApp → Settings → Linked Devices → Link with phone number");
+                        console.log("[PAIR] Code valid for ~160 seconds");
+                    } catch (e) {
+                        _pairingRequested = false;   // allow retry on next qr event if this failed
+                        console.error("[PAIR] requestPairingCode failed:", e.message);
+                    }
                 }
             } else {
                 latestQR = qr;
@@ -356,8 +366,9 @@ async function connectToWhatsApp() {
         }
 
         if (connection === "close") {
-            isConnected  = false;
-            deviceReady  = false;
+            isConnected       = false;
+            deviceReady       = false;
+            _pairingRequested = false;   // allow fresh pairing code on next connect attempt
             if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
 
             const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
