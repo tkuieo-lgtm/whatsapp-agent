@@ -317,10 +317,10 @@ async function connectToWhatsApp() {
         }
 
         if (qr) {
-            if (USE_PAIRING_CODE && !state.creds.registered) {
-                // qr event = socket connected, WhatsApp waiting for auth.
-                // This is the correct moment to request a pairing code.
-                // A setTimeout is WRONG — the socket isn't connected yet at that point.
+            if (connectionState === "open" || deviceReady) {
+                // Already connected — ignore spurious qr events (prevent accidental re-pairing)
+                console.warn("[PAIR] qr event ignored — already connected (state=open or deviceReady)");
+            } else if (USE_PAIRING_CODE && !state.creds.registered) {
                 try {
                     const code = await sock.requestPairingCode(AGENT_PHONE);
                     latestPairingCode = code;
