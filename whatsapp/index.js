@@ -389,6 +389,18 @@ async function connectToWhatsApp() {
     });
 
     // ---------------------------------------------------------------------------
+    // Outgoing message status updates (PENDING→SERVER_ACK→DELIVERY_ACK→READ)
+    // ---------------------------------------------------------------------------
+    sock.ev.on("messages.update", (updates) => {
+        for (const { key, update } of updates) {
+            if (!key.fromMe) continue;   // only track our own sent messages
+            const STATUS = { 0: "ERROR", 1: "PENDING", 2: "SERVER_ACK", 3: "DELIVERY_ACK", 4: "READ", 5: "PLAYED" };
+            const s = update.status;
+            console.log(`[STATUS] id=${key.id?.slice(-8)} → ${STATUS[s] ?? s} (${s}) jid=${key.remoteJid}`);
+        }
+    });
+
+    // ---------------------------------------------------------------------------
     // Incoming messages
     // ---------------------------------------------------------------------------
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
