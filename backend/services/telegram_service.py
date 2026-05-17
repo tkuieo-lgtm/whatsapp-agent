@@ -337,8 +337,15 @@ async def start_telegram_bot() -> None:
 
     await _app.initialize()
     await _app.start()
-    await _app.updater.start_polling(drop_pending_updates=True)
-    logger.info("[TELEGRAM] Bot started polling (voice I/O + secure group support)")
+    # Webhook mode — no polling. Updates arrive via POST /webhook/telegram.
+    # Register the webhook URL with Telegram automatically.
+    if settings.backend_url:
+        webhook_url = f"{settings.backend_url.rstrip('/')}/webhook/telegram"
+        await _app.bot.set_webhook(url=webhook_url, drop_pending_updates=True)
+        logger.info(f"[TELEGRAM] Webhook registered: {webhook_url}")
+    else:
+        logger.warning("[TELEGRAM] BACKEND_URL not set — webhook not registered")
+    logger.info("[TELEGRAM] Bot ready (webhook mode)")
 
 
 async def stop_telegram_bot() -> None:
@@ -346,7 +353,6 @@ async def stop_telegram_bot() -> None:
     if not _app:
         return
     try:
-        await _app.updater.stop()
         await _app.stop()
         await _app.shutdown()
         logger.info("[TELEGRAM] Bot stopped")

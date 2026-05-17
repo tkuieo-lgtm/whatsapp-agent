@@ -176,3 +176,20 @@ async def evolution_webhook(request: Request, background_tasks: BackgroundTasks)
 
     background_tasks.add_task(_handle_evolution_event, body)
     return {"ok": True}
+
+
+@router.post("/webhook/telegram")
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Receives Telegram Bot API updates (webhook mode — replaces polling)."""
+    from services.telegram_service import _app as tg_app
+    if not tg_app:
+        return JSONResponse(status_code=503, content={"error": "Telegram not configured"})
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "invalid JSON"})
+
+    from telegram import Update
+    update = Update.de_json(data, tg_app.bot)
+    background_tasks.add_task(tg_app.process_update, update)
+    return {"ok": True}

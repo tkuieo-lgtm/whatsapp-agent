@@ -47,19 +47,22 @@ async def _ev_send_audio(number: str, audio_b64: str) -> None:
         f"{settings.evolution_api_url.rstrip('/')}"
         f"/message/sendWhatsAppAudio/{settings.evolution_instance}"
     )
-    # Evolution API v2 flat format — audio/encoding at top level, no audioMessage wrapper
+    # Evolution API v2 flat format
     payload = {
         "number": number,
         "audio": audio_b64,
         "encoding": True,
     }
     headers = {"apikey": settings.evolution_api_key or ""}
+    logger.info(
+        f"[EVOLUTION] Sending audio payload: number={number!r} "
+        f"encoding=True audio_len={len(audio_b64)} url={url}"
+    )
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(url, json=payload, headers=headers)
-        if resp.status_code >= 400:
-            logger.error(f"[EVOLUTION] sendWhatsAppAudio {resp.status_code}: {resp.text[:300]}")
+        logger.info(f"[EVOLUTION] sendWhatsAppAudio → {resp.status_code}: {resp.text[:300]}")
         resp.raise_for_status()
-    logger.info(f"[EVOLUTION] Audio sent to {number} ({len(audio_b64)} b64 chars)")
+    logger.info(f"[EVOLUTION] Audio sent OK to {number}")
 
 
 # ---------------------------------------------------------------------------
