@@ -236,6 +236,7 @@ let latestQR              = null;
 let latestPairingCode     = null;
 let sock                  = null;
 let isConnected           = false;
+let connectionState       = "disconnected";   // "disconnected" | "connecting" | "open"
 let keepAliveInterval     = null;
 let _sessionBackupInterval = null;   // module-level — only one interval ever
 let reconnectAttempts     = 0;
@@ -301,10 +302,13 @@ async function connectToWhatsApp() {
         scheduleSave();   // debounced 30 s — NOT immediate
     });
 
+    console.log(`[CONN] Socket created — waiting for connection.update events`);
+
     // Connection lifecycle
     sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr, isNewLogin, receivedPendingNotifications }) => {
+        if (connection) connectionState = connection;   // "connecting" | "open" | "close"
         const code = lastDisconnect ? new Boom(lastDisconnect?.error)?.output?.statusCode : null;
-        console.log(`[CONN] connection=${connection ?? "-"} qr=${!!qr} code=${code ?? "-"} isNewLogin=${isNewLogin ?? "-"} pendingNotif=${receivedPendingNotifications ?? "-"}`);
+        console.log(`[CONN] connection=${connection ?? "-"} qr=${!!qr} code=${code ?? "-"} isNewLogin=${isNewLogin ?? "-"} pendingNotif=${receivedPendingNotifications ?? "-"} state=${connectionState}`);
         if (lastDisconnect?.error) console.log(`[CONN] error: ${lastDisconnect.error.message ?? lastDisconnect.error}`);
 
         if (qr) {
@@ -547,6 +551,10 @@ app.get("/status", (_req, res) =>
 app.post("/send", async (req, res) => {
     const { phone, message, chat_id } = req.body;
     if (!message) return res.status(400).json({ error: "message is required" });
+    if (connectionState !== "open") {
+        console.warn(`[SEND] Blocked — connection not open (state=${connectionState})`);
+        return res.status(503).json({ success: false, error: `not connected (state=${connectionState})` });
+    }
     try {
         const jid  = chat_id ? normalizeJid(chat_id) : normalizeJid(phone || OWNER_PHONE);
         const sent = await sock.sendMessage(jid, { text: message });
@@ -561,6 +569,10 @@ app.post("/send", async (req, res) => {
 app.post("/send-voice", async (req, res) => {
     const { to, audio, mime } = req.body;
     if (!to || !audio) return res.status(400).json({ error: "to and audio are required" });
+    if (connectionState !== "open") {
+        console.warn(`[VOICE-OUT] Blocked — connection not open (state=${connectionState})`);
+        return res.status(503).json({ error: `not connected (state=${connectionState})` });
+    }
     console.log(`[VOICE-OUT] Sending to ${to}, audio_len=${audio?.length}`);
     try {
         const jid    = normalizeJid(to);
