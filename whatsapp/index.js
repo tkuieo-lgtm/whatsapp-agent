@@ -18,7 +18,8 @@ const QRCode  = require("qrcode");
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const OWNER_PHONE      = (process.env.OWNER_PHONE || "").replace(/\D/g, "");
+const OWNER_PHONE      = (process.env.OWNER_PHONE || "").replace(/\D/g, "");  // owner identity (message filtering)
+const AGENT_PHONE      = (process.env.AGENT_PHONE || OWNER_PHONE).replace(/\D/g, "");  // WA account running the bot (pairing)
 const BOT_NAME         = process.env.BOT_NAME || "מקס";
 const BACKEND_URL      = process.env.BACKEND_URL || "http://localhost:8000";
 const DATABASE_URL     = process.env.DATABASE_URL;
@@ -309,9 +310,9 @@ async function connectToWhatsApp() {
                 // This is the correct moment to request a pairing code.
                 // A setTimeout is WRONG — the socket isn't connected yet at that point.
                 try {
-                    const code = await sock.requestPairingCode(OWNER_PHONE);
+                    const code = await sock.requestPairingCode(AGENT_PHONE);
                     latestPairingCode = code;
-                    console.log(`[PAIR] Code for ${OWNER_PHONE}: ${code}`);
+                    console.log(`[PAIR] Code for agent ${AGENT_PHONE}: ${code}`);
                     console.log("[PAIR] WhatsApp → Settings → Linked Devices → Link with phone number");
                 } catch (e) {
                     console.error("[PAIR] requestPairingCode failed:", e.message);
