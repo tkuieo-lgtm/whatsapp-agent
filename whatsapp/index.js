@@ -331,6 +331,8 @@ async function connectToWhatsApp() {
                     try {
                         const code = await sock.requestPairingCode(AGENT_PHONE);
                         latestPairingCode = code;
+                        // Log raw value so we can verify format before any processing
+                        console.log(`[PAIR] Raw code from Baileys: ${JSON.stringify(code)} length=${code?.length} type=${typeof code}`);
                         console.log(`[PAIR] Code for agent ${AGENT_PHONE}: ${code}`);
                         console.log("[PAIR] WhatsApp → Settings → Linked Devices → Link with phone number");
                         console.log("[PAIR] Code valid for ~160 seconds");
@@ -665,14 +667,17 @@ app.get("/pair", (_req, res) => {
             `<script>setTimeout(()=>location.reload(),3000)</script>`
         );
     }
-    const code = latestPairingCode.match(/.{1,4}/g)?.join("-") || latestPairingCode;
+    const raw       = latestPairingCode;
+    const formatted = raw.match(/.{1,4}/g)?.join("-") || raw;
     res.send(`<!DOCTYPE html>
 <html><head><title>${BOT_NAME} Pairing</title></head>
 <body style="font-family:sans-serif;text-align:center;padding:40px;background:#f5f5f5">
   <h2>🔑 Pairing Code</h2>
   <p>Open WhatsApp → Settings → Linked Devices → <b>Link with phone number</b></p>
-  <div style="font-size:3em;font-weight:bold;letter-spacing:8px;margin:30px;color:#075e54">${code}</div>
-  <p style="color:#888;font-size:13px">Phone: ${OWNER_PHONE} | Code expires in ~60s</p>
+  <div style="font-size:3em;font-weight:bold;letter-spacing:8px;margin:30px;color:#075e54">${formatted}</div>
+  <p style="color:#555;font-size:14px">Enter exactly as shown (no hyphens needed in WhatsApp)</p>
+  <p style="color:#888;font-size:12px;font-family:monospace">Raw: ${raw} (${raw.length} chars)</p>
+  <p style="color:#888;font-size:13px">Agent phone: ${AGENT_PHONE} | Valid ~160 seconds</p>
   <script>setTimeout(()=>location.reload(),30000)</script>
 </body></html>`);
 });
