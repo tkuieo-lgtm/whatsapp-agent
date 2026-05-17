@@ -280,9 +280,10 @@ async function connectToWhatsApp() {
         logger: silentLogger,
         browser: ["Ubuntu", "Chrome", "20.0.04"],  // = Browsers.ubuntu('Chrome') — Baileys default
         syncFullHistory: false,
-        connectTimeoutMs: 60_000,        // 60s — keeps socket alive through pairing handshake
-        defaultQueryTimeoutMs: 60_000,   // same for query timeouts
-        retryRequestDelayMs: 250,        // retry delay if WS request needs retry
+        connectTimeoutMs: 60_000,
+        defaultQueryTimeoutMs: 60_000,
+        retryRequestDelayMs: 250,
+        qrTimeout: 300_000,   // 5 min per ref × ~5 refs = ~25 min total before 408
         keepAliveIntervalMs: 20_000,
         getMessage: async (_key) => ({ conversation: "" }),
     });
@@ -327,20 +328,23 @@ async function connectToWhatsApp() {
                 // Already connected — ignore spurious qr events (prevent accidental re-pairing)
                 console.warn("[PAIR] qr event ignored — already connected");
             } else if (USE_PAIRING_CODE && !state.creds.registered) {
-                // Request a fresh code on EVERY qr event.
-                // WhatsApp closes connection with 408 after N QR cycles (~100s) if we don't.
-                // Requesting a new code each cycle resets WhatsApp's attempt counter.
-                // The /pair page auto-refreshes every 15s so the user always sees the latest code.
-                _pairingRequested = true;
-                try {
-                    const code = await sock.requestPairingCode(AGENT_PHONE);
-                    latestPairingCode = code;
-                    latestPairingCodeAt = Date.now();
-                    console.log(`[PAIR] Code refreshed: ${JSON.stringify(code)} length=${code?.length}`);
-                    console.log(`[PAIR] Open /pair — code rotates every ~20s, page auto-refreshes`);
-                } catch (e) {
-                    _pairingRequested = false;
-                    console.error("[PAIR] requestPairingCode failed:", e.message);
+                if (_pairingRequested) {
+                    // qrTimeout=300s means next QR fires only after 5 minutes — the
+                    // same code is still valid. Requesting again would invalidate it.
+                    console.log("[PAIR] qr refresh — keeping existing code (still valid)");
+                } else {
+                    _pairingRequested = true;
+                    try {
+                        const code = await sock.requestPairingCode(AGENT_PHONE);
+                        latestPairingCode = code;
+                        latestPairingCodeAt = Date.now();
+                        console.log(`[PAIR] Raw code: ${JSON.stringify(code)} length=${code?.length} type=${typeof code}`);
+                        console.log(`[PAIR] Code for agent ${AGENT_PHONE}: ${code}`);
+                        console.log("[PAIR] Open /pair — code valid until next qr event (~5 min)");
+                    } catch (e) {
+                        _pairingRequested = false;
+                        console.error("[PAIR] requestPairingCode failed:", e.message);
+                    }
                 }
             } else {
                 latestQR = qr;
@@ -677,10 +681,10 @@ app.get("/pair", (_req, res) => {
   <h2>🔑 Pairing Code</h2>
   <p>Open WhatsApp → Settings → Linked Devices → <b>Link with phone number</b></p>
   <div style="font-size:3em;font-weight:bold;letter-spacing:8px;margin:30px;color:#075e54">${formatted}</div>
-  <p style="color:#555;font-size:14px">Enter without hyphens — code rotates every ~20s, enter quickly</p>
+  <p style="color:#555;font-size:14px">Enter without hyphens — code is stable for ~5 minutes</p>
   <p style="color:#888;font-size:12px;font-family:monospace">Raw: ${raw} (${raw.length} chars) | age: ${ageSec}s</p>
   <p style="color:#888;font-size:13px">Agent: ${AGENT_PHONE}</p>
-  <script>setTimeout(()=>location.reload(),15000)</script>
+  <script>setTimeout(()=>location.reload(),30000)</script>
 </body></html>`);
 });
 
