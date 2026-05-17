@@ -564,7 +564,8 @@ app.post("/send", async (req, res) => {
     }
     try {
         const constructedJid = chat_id ? normalizeJid(chat_id) : normalizeJid(phone || OWNER_PHONE);
-        const jid = (!chat_id && !phone && lastOwnerJid) ? lastOwnerJid : constructedJid;
+        const isGroupTarget  = constructedJid.endsWith("@g.us");
+        const jid = (!isGroupTarget && lastOwnerJid) ? lastOwnerJid : constructedJid;
         console.log(`[SEND] constructedJid=${constructedJid} lastOwnerJid=${lastOwnerJid ?? "none"} → using=${jid}`);
         const sent = await sock.sendMessage(jid, { text: message });
         console.log(`[SEND] → ${jid} | status=${sent?.status} id=${sent?.key?.id}`);
