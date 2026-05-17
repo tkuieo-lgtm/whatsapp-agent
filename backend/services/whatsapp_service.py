@@ -30,11 +30,8 @@ async def _ev_send_text(number: str, text: str) -> None:
         f"{settings.evolution_api_url.rstrip('/')}"
         f"/message/sendText/{settings.evolution_instance}"
     )
-    payload = {
-        "number": number,
-        "options": {"delay": 1200, "presence": "composing"},
-        "textMessage": {"text": text},
-    }
+    # Flat format — confirmed working
+    payload = {"number": number, "text": text}
     headers = {"apikey": settings.evolution_api_key or ""}
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(url, json=payload, headers=headers)
@@ -61,9 +58,17 @@ async def _ev_send_audio(number: str, audio_b64: str) -> None:
     )
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(url, json=payload, headers=headers)
-        logger.info(f"[EVOLUTION] sendWhatsAppAudio → {resp.status_code}: {resp.text[:300]}")
-        resp.raise_for_status()
-    logger.info(f"[EVOLUTION] Audio sent OK to {number}")
+    body = resp.text[:300]
+    logger.info(f"[EVOLUTION] sendWhatsAppAudio → {resp.status_code}: {body}")
+    resp.raise_for_status()
+    # Detect PENDING — Evolution API accepted but won't deliver
+    try:
+        status = resp.json().get("status", "")
+    except Exception:
+        status = ""
+    if status == "PENDING":
+        raise RuntimeError(f"PENDING — instance not delivering audio")
+    logger.info(f"[EVOLUTION] Audio status={status!r} to {number}")
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +125,12 @@ async def send_voice_message(
         try:
             await _ev_send_audio(_to_evolution_number(target), audio_b64)
             return True
+        except RuntimeError as e:
+            if "PENDING" in str(e):
+                logger.warning(f"[EVOLUTION] Audio PENDING — falling back to text message")
+                return await send_message(text, chat_id)
+            logger.error(f"[WHATSAPP] Evolution send_audio failed: {e}")
+            return False
         except Exception as e:
             logger.error(f"[WHATSAPP] Evolution send_audio failed: {e}")
             return False
