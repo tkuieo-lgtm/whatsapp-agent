@@ -271,27 +271,13 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: !USE_PAIRING_CODE,  // no QR in terminal when using pairing code
+        printQRInTerminal: false,   // never print QR in terminal (Railway has no tty)
         logger: silentLogger,
         browser: ["Ubuntu", "Chrome", "20.0.04"],
         syncFullHistory: false,
         keepAliveIntervalMs: 20_000,
         getMessage: async (_key) => ({ conversation: "" }),
     });
-
-    // Pairing code: request when session not yet registered (first-time link only)
-    if (USE_PAIRING_CODE && !state.creds.registered) {
-        setTimeout(async () => {
-            try {
-                const code = await sock.requestPairingCode(OWNER_PHONE);
-                latestPairingCode = code;
-                console.log(`[PAIR] Pairing code for ${OWNER_PHONE}: ${code}`);
-                console.log("[PAIR] Open WhatsApp → Settings → Linked Devices → Link with phone number");
-            } catch (e) {
-                console.error("[PAIR] Failed to request pairing code:", e.message);
-            }
-        }, 3000);
-    }
 
     // Build lid→phone map from contact sync (fires during connection init)
     sock.ev.on("contacts.upsert", (contacts) => {
@@ -318,8 +304,22 @@ async function connectToWhatsApp() {
     // Connection lifecycle
     sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
         if (qr) {
-            latestQR = qr;
-            console.log("[QR] New QR received — open /qr in browser to scan");
+            if (USE_PAIRING_CODE && !state.creds.registered) {
+                // qr event = socket connected, WhatsApp waiting for auth.
+                // This is the correct moment to request a pairing code.
+                // A setTimeout is WRONG — the socket isn't connected yet at that point.
+                try {
+                    const code = await sock.requestPairingCode(OWNER_PHONE);
+                    latestPairingCode = code;
+                    console.log(`[PAIR] Code for ${OWNER_PHONE}: ${code}`);
+                    console.log("[PAIR] WhatsApp → Settings → Linked Devices → Link with phone number");
+                } catch (e) {
+                    console.error("[PAIR] requestPairingCode failed:", e.message);
+                }
+            } else {
+                latestQR = qr;
+                console.log("[QR] New QR received — open /qr in browser to scan");
+            }
         }
 
         if (connection === "open") {
@@ -350,13 +350,19 @@ async function connectToWhatsApp() {
             console.log(`[WHATSAPP] Disconnected — code: ${code}`);
 
             if (code === DisconnectReason.loggedOut) {
-                console.log("[WHATSAPP] Logged out — clearing DB session and LID map");
+                console.log("[WHATSAPP] Logged out (401) — clearing DB + local session files + LID map");
                 lidMap.clear();
                 latestPairingCode = null;
+                // Clear DB
                 const pool = getPool();
                 if (pool) {
                     try { await pool.query("DELETE FROM whatsapp_sessions WHERE id IN ('main','owner_lid')"); }
-                    catch (e) { console.error("[SESSION] Clear error:", e.message); }
+                    catch (e) { console.error("[SESSION] DB clear error:", e.message); }
+                }
+                // Also clear local files — CRITICAL: without this, stale creds cause another 401 loop
+                if (fs.existsSync(SESSION_DIR)) {
+                    fs.rmSync(SESSION_DIR, { recursive: true, force: true });
+                    console.log("[SESSION] Local session files cleared");
                 }
                 reconnectAttempts = 0;
                 setTimeout(() => connectToWhatsApp(), 3000);
