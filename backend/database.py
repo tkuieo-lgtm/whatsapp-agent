@@ -137,29 +137,6 @@ class Memory(Base):
     last_referenced = Column(DateTime(timezone=True), server_default=func.now())
 
 
-class VoicePreference(Base):
-    __tablename__ = "voice_preferences"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    context_type = Column(String(50))
-    used_voice = Column(Boolean)
-    user_feedback = Column(String(20))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
-class Reflection(Base):
-    __tablename__ = "reflections"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    message_in = Column(Text, nullable=False)
-    response_out = Column(Text, nullable=False)
-    tool_used = Column(String(200))
-    format_used = Column(String(20))        # "text" | "voice"
-    reflection_score = Column(Integer)      # 1-5
-    improvement_note = Column(Text)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
 class GroupMember(Base):
     __tablename__ = "group_members"
 

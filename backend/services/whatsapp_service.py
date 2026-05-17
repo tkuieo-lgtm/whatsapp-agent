@@ -10,84 +10,8 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Evolution API helpers
-# ---------------------------------------------------------------------------
-
-def _to_evolution_number(target: str) -> str:
-    """Convert JID or phone string to Evolution API number format.
-
-    Groups  → keep full JID  (120363...@g.us)
-    DM/phone → digits only   (972546670073)
-    """
-    if target.endswith("@g.us"):
-        return target
-    return target.split("@")[0]
-
-
-async def _ev_send_text(number: str, text: str) -> None:
-    url = (
-        f"{settings.evolution_api_url.rstrip('/')}"
-        f"/message/sendText/{settings.evolution_instance}"
-    )
-    # Flat format — confirmed working
-    payload = {"number": number, "text": text}
-    headers = {"apikey": settings.evolution_api_key or ""}
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(url, json=payload, headers=headers)
-        resp.raise_for_status()
-    logger.info(f"[EVOLUTION] Text sent to {number}")
-
-
-async def _ev_send_audio(number: str, audio_b64: str) -> None:
-    url = (
-        f"{settings.evolution_api_url.rstrip('/')}"
-        f"/message/sendWhatsAppAudio/{settings.evolution_instance}"
-    )
-    # encoding=False — audio is already ogg/opus (WhatsApp native format),
-    # no re-encoding needed. encoding=True caused PENDING/never-sent.
-    payload = {
-        "number": number,
-        "audio": audio_b64,
-        "encoding": False,
-    }
-    headers = {"apikey": settings.evolution_api_key or ""}
-    logger.info(
-        f"[EVOLUTION] Sending audio payload: number={number!r} "
-        f"encoding=False audio_len={len(audio_b64)} url={url}"
-    )
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(url, json=payload, headers=headers)
-    body = resp.text[:300]
-    logger.info(f"[EVOLUTION] sendWhatsAppAudio → {resp.status_code}: {body}")
-    resp.raise_for_status()
-    # Detect PENDING — Evolution API accepted but won't deliver
-    try:
-        status = resp.json().get("status", "")
-    except Exception:
-        status = ""
-    if status == "PENDING":
-        raise RuntimeError(f"PENDING — instance not delivering audio")
-    logger.info(f"[EVOLUTION] Audio status={status!r} to {number}")
-
-
-# ---------------------------------------------------------------------------
-# Public API — Evolution API when configured, Baileys bridge as fallback
-# ---------------------------------------------------------------------------
-
 async def send_message(message: str, chat_id: Optional[str] = None) -> bool:
-    """Send a text WhatsApp message."""
-    target = chat_id or f"{settings.owner_phone}@c.us"
-
-    if settings.evolution_api_url:
-        try:
-            await _ev_send_text(_to_evolution_number(target), message)
-            return True
-        except Exception as e:
-            logger.error(f"[WHATSAPP] Evolution send_text failed: {e}")
-            return False
-
-    # Fallback: Baileys bridge
+    """Send a text WhatsApp message via Baileys bridge."""
     try:
         payload: dict = {"message": message}
         if chat_id:
@@ -99,56 +23,35 @@ async def send_message(message: str, chat_id: Optional[str] = None) -> bool:
             resp.raise_for_status()
         return True
     except Exception as e:
-        logger.error(f"[WHATSAPP] Baileys send failed: {e}")
+        logger.error(f"[WHATSAPP] send_message failed: {e}")
         return False
 
 
-async def send_voice_message(
-    text: str,
-    chat_id: Optional[str] = None,
-    context_type: str = "text",
-) -> bool:
-    """Generate TTS and send as a WhatsApp voice note (ogg/opus)."""
+async def send_voice_message(text: str, chat_id: Optional[str] = None) -> bool:
+    """Generate TTS and send as a WhatsApp voice note (ogg/opus) via Baileys bridge."""
     try:
         from services.tts_service import text_to_speech
         audio_bytes = await text_to_speech(text)
         logger.info(f"[TTS] Generated {len(audio_bytes)} bytes ogg/opus")
     except Exception as e:
-        logger.error(f"[TTS] FAILED at TTS generation: {type(e).__name__}: {e}")
+        logger.error(f"[TTS] TTS generation failed: {type(e).__name__}: {e}")
         logger.error(traceback.format_exc())
         return False
 
     audio_b64 = base64.b64encode(audio_bytes).decode()
     target    = chat_id or f"{settings.owner_phone}@c.us"
+    payload   = {"to": target, "audio": audio_b64, "mime": "audio/ogg; codecs=opus"}
 
-    if settings.evolution_api_url:
-        try:
-            await _ev_send_audio(_to_evolution_number(target), audio_b64)
-            return True
-        except RuntimeError as e:
-            if "PENDING" in str(e):
-                logger.warning(f"[EVOLUTION] Audio PENDING — falling back to text message")
-                return await send_message(text, chat_id)
-            logger.error(f"[WHATSAPP] Evolution send_audio failed: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"[WHATSAPP] Evolution send_audio failed: {e}")
-            return False
-
-    # Fallback: Baileys bridge
-    payload = {"to": target, "audio": audio_b64, "mime": "audio/ogg; codecs=opus"}
     logger.info(f"[TTS] Sending voice note to {target} ({len(audio_bytes)} bytes)")
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{settings.whatsapp_service_url}/send-voice", json=payload
-            )
+            resp = await client.post(f"{settings.whatsapp_service_url}/send-voice", json=payload)
             if resp.status_code != 200:
                 logger.error(f"[TTS] /send-voice returned {resp.status_code}: {resp.text[:300]}")
                 return False
-        logger.info(f"[TTS] Voice note sent OK")
+        logger.info("[TTS] Voice note sent OK")
         return True
     except Exception as e:
-        logger.error(f"[TTS] FAILED at /send-voice: {type(e).__name__}: {e}")
+        logger.error(f"[TTS] /send-voice failed: {type(e).__name__}: {e}")
         logger.error(traceback.format_exc())
         return False

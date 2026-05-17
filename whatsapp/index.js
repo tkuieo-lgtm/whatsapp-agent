@@ -444,7 +444,6 @@ async function connectToWhatsApp() {
                         is_group: true,
                         group_id: jid,
                         group_sender: senderPhone,
-                        group_sender_is_owner: isOwner(senderJid),
                     }, { timeout: 30000 });
                 } catch (err) {
                     console.error("[GROUP] Forward error:", err.message);

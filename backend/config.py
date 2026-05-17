@@ -18,23 +18,18 @@ class Settings(BaseSettings):
     telegram_bot_token: Optional[str] = None
     owner_telegram_id: Optional[str] = None
     whatsapp_service_url: str = "http://localhost:3000"
-    # Evolution API (replaces custom Baileys bridge when set)
-    evolution_api_url: Optional[str] = None       # e.g. https://evo.railway.app
-    evolution_api_key: Optional[str] = None       # apikey header value
-    evolution_instance: str = "default"           # instance name in Evolution API
     backend_url: str = "http://localhost:8000"
     timezone: str = "Asia/Jerusalem"
     morning_summary_hour: int = 7
     morning_summary_minute: int = 30
     weekly_summary_day: int = 4
     weekly_summary_hour: int = 17
-    reminder_check_hours: int = 4
-    reminder_threshold_hours: int = 6
     claude_model: str = "claude-sonnet-4-6"
     claude_rate_limit_per_hour: int = 100
 
     class Config:
         env_file = ("../.env", ".env")
+        extra    = "ignore"   # silently ignore unknown env vars (e.g. old removed settings)
 
 
 settings = Settings()

@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import verify_tables
-from routers import auth, chat, evolution, logs, messages, rules, settings_router
+from routers import auth, chat, logs, messages, rules, settings_router
 from services.scheduler import setup_scheduler
 from services.telegram_service import start_telegram_bot, stop_telegram_bot
 
@@ -37,10 +37,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"[STARTUP] TTS engine: edge-tts, STT engine: Groq")
     groq_preview = (s.groq_api_key or "")[:10]
     logger.info(f"[STARTUP] GROQ_API_KEY loaded: {groq_preview}... (len={len(s.groq_api_key or '')})")
-    if s.evolution_api_url:
-        logger.info(f"[STARTUP] Evolution API: {s.evolution_api_url} instance={s.evolution_instance}")
-    else:
-        logger.info(f"[STARTUP] Evolution API: not configured — using Baileys bridge")
+    logger.info(f"[STARTUP] WhatsApp bridge: {s.whatsapp_service_url}")
     ok = await verify_tables()
     if not ok:
         logger.warning("[STARTUP] Some Supabase tables are missing — see output above.")
@@ -66,7 +63,6 @@ app.add_middleware(
 )
 
 app.include_router(messages.router)
-app.include_router(evolution.router)
 app.include_router(auth.router)
 app.include_router(rules.router)
 app.include_router(settings_router.router)
