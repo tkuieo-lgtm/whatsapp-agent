@@ -237,6 +237,7 @@ let latestPairingCode     = null;
 let sock                  = null;
 let isConnected           = false;
 let connectionState       = "disconnected";   // "disconnected" | "connecting" | "open"
+let lastOwnerJid          = null;             // actual JID from the last owner DM (may be @lid)
 let keepAliveInterval     = null;
 let _sessionBackupInterval = null;   // module-level — only one interval ever
 let reconnectAttempts     = 0;
@@ -480,6 +481,12 @@ async function connectToWhatsApp() {
             // --- DIRECT MESSAGE — must be from owner ---
             if (!isOwner(senderJid)) continue;
 
+            // Remember the exact JID the owner used — may be @lid or @s.whatsapp.net
+            if (rawJid !== lastOwnerJid) {
+                console.log(`[SEND] lastOwnerJid updated: ${lastOwnerJid ?? "none"} → ${rawJid}`);
+                lastOwnerJid = rawJid;
+            }
+
             // Voice note (ptt)
             const audioMsg = msg.message?.audioMessage;
             if (audioMsg?.ptt) {
@@ -556,7 +563,9 @@ app.post("/send", async (req, res) => {
         return res.status(503).json({ success: false, error: `not connected (state=${connectionState})` });
     }
     try {
-        const jid  = chat_id ? normalizeJid(chat_id) : normalizeJid(phone || OWNER_PHONE);
+        const constructedJid = chat_id ? normalizeJid(chat_id) : normalizeJid(phone || OWNER_PHONE);
+        const jid = (!chat_id && !phone && lastOwnerJid) ? lastOwnerJid : constructedJid;
+        console.log(`[SEND] constructedJid=${constructedJid} lastOwnerJid=${lastOwnerJid ?? "none"} → using=${jid}`);
         const sent = await sock.sendMessage(jid, { text: message });
         console.log(`[SEND] → ${jid} | status=${sent?.status} id=${sent?.key?.id}`);
         res.json({ success: true });
@@ -575,7 +584,10 @@ app.post("/send-voice", async (req, res) => {
     }
     console.log(`[VOICE-OUT] Sending to ${to}, audio_len=${audio?.length}`);
     try {
-        const jid    = normalizeJid(to);
+        const constructedJid = normalizeJid(to);
+        const isOwnerTarget  = normalizeJid(OWNER_PHONE) === constructedJid || constructedJid === `${OWNER_PHONE}@s.whatsapp.net`;
+        const jid            = (isOwnerTarget && lastOwnerJid) ? lastOwnerJid : constructedJid;
+        console.log(`[VOICE-OUT] constructedJid=${constructedJid} lastOwnerJid=${lastOwnerJid ?? "none"} → using=${jid}`);
         const buffer = Buffer.from(audio, "base64");
         const sent   = await sock.sendMessage(jid, {
             audio: buffer,
