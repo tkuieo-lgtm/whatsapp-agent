@@ -18,12 +18,13 @@ const QRCode  = require("qrcode");
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const OWNER_PHONE  = (process.env.OWNER_PHONE || "").replace(/\D/g, "");
-const BOT_NAME     = process.env.BOT_NAME || "מקס";
-const BACKEND_URL  = process.env.BACKEND_URL || "http://localhost:8000";
-const DATABASE_URL = process.env.DATABASE_URL;
-const PORT         = process.env.PORT || 3000;
-const SESSION_DIR  = "./.baileys_auth";
+const OWNER_PHONE      = (process.env.OWNER_PHONE || "").replace(/\D/g, "");
+const BOT_NAME         = process.env.BOT_NAME || "מקס";
+const BACKEND_URL      = process.env.BACKEND_URL || "http://localhost:8000";
+const DATABASE_URL     = process.env.DATABASE_URL;
+const PORT             = process.env.PORT || 3000;
+const SESSION_DIR      = "./.baileys_auth";
+const USE_PAIRING_CODE = process.env.USE_PAIRING_CODE === "true";
 
 if (!OWNER_PHONE) {
     console.error("[ERROR] OWNER_PHONE is not set in .env");
@@ -231,15 +232,17 @@ function scheduleSave() {
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-let latestQR          = null;
-let sock              = null;
-let isConnected       = false;
-let keepAliveInterval = null;
-let reconnectAttempts = 0;
-const MAX_RECONNECT   = 10;
-const BACKOFF_MS      = [30_000, 60_000, 120_000];
-const MAX_BACKOFF     = 5 * 60_000;
-const seen            = new Set();
+let latestQR              = null;
+let latestPairingCode     = null;
+let sock                  = null;
+let isConnected           = false;
+let keepAliveInterval     = null;
+let _sessionBackupInterval = null;   // module-level — only one interval ever
+let reconnectAttempts     = 0;
+const MAX_RECONNECT       = 10;
+const BACKOFF_MS          = [30_000, 60_000, 120_000];
+const MAX_BACKOFF         = 5 * 60_000;
+const seen                = new Set();
 
 function markSeen(id) {
     seen.add(id);
@@ -268,14 +271,27 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: true,
+        printQRInTerminal: !USE_PAIRING_CODE,  // no QR in terminal when using pairing code
         logger: silentLogger,
-        browser: ["Ubuntu", "Chrome", "20.0.04"],  // less likely to trigger WA restrictions
+        browser: ["Ubuntu", "Chrome", "20.0.04"],
         syncFullHistory: false,
         keepAliveIntervalMs: 20_000,
-        // Required for message retry decryption — without this some messages are silently dropped
         getMessage: async (_key) => ({ conversation: "" }),
     });
+
+    // Pairing code: request when session not yet registered (first-time link only)
+    if (USE_PAIRING_CODE && !state.creds.registered) {
+        setTimeout(async () => {
+            try {
+                const code = await sock.requestPairingCode(OWNER_PHONE);
+                latestPairingCode = code;
+                console.log(`[PAIR] Pairing code for ${OWNER_PHONE}: ${code}`);
+                console.log("[PAIR] Open WhatsApp → Settings → Linked Devices → Link with phone number");
+            } catch (e) {
+                console.error("[PAIR] Failed to request pairing code:", e.message);
+            }
+        }, 3000);
+    }
 
     // Build lid→phone map from contact sync (fires during connection init)
     sock.ev.on("contacts.upsert", (contacts) => {
@@ -334,10 +350,12 @@ async function connectToWhatsApp() {
             console.log(`[WHATSAPP] Disconnected — code: ${code}`);
 
             if (code === DisconnectReason.loggedOut) {
-                console.log("[WHATSAPP] Logged out — clearing DB session");
+                console.log("[WHATSAPP] Logged out — clearing DB session and LID map");
+                lidMap.clear();
+                latestPairingCode = null;
                 const pool = getPool();
                 if (pool) {
-                    try { await pool.query("DELETE FROM whatsapp_sessions WHERE id=$1", ["main"]); }
+                    try { await pool.query("DELETE FROM whatsapp_sessions WHERE id IN ('main','owner_lid')"); }
                     catch (e) { console.error("[SESSION] Clear error:", e.message); }
                 }
                 reconnectAttempts = 0;
@@ -481,8 +499,10 @@ async function connectToWhatsApp() {
         }
     });
 
-    // Periodic session backup every 10 minutes (belt-and-suspenders for the debounce)
-    setInterval(() => { if (isConnected) saveSessionToDB(); }, 10 * 60 * 1000);
+    // Session backup interval: start once at module level, not per-reconnect
+    if (!_sessionBackupInterval) {
+        _sessionBackupInterval = setInterval(() => { if (isConnected) saveSessionToDB(); }, 10 * 60 * 1000);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -563,6 +583,29 @@ app.post("/reset-session", async (_req, res) => {
     }
     res.json({ success: true, message: "Session cleared — scan QR at /qr" });
     setTimeout(() => connectToWhatsApp(), 1000);
+});
+
+app.get("/pair", (_req, res) => {
+    if (isConnected) {
+        return res.send(`<h2 style="font-family:sans-serif;text-align:center;padding:40px">✅ ${BOT_NAME} is connected!</h2>`);
+    }
+    if (!latestPairingCode) {
+        return res.send(
+            `<h2 style="font-family:sans-serif;text-align:center;padding:40px">⏳ Requesting pairing code…</h2>` +
+            `<p style="text-align:center;color:#555">Make sure USE_PAIRING_CODE=true and the server just started.</p>` +
+            `<script>setTimeout(()=>location.reload(),3000)</script>`
+        );
+    }
+    const code = latestPairingCode.match(/.{1,4}/g)?.join("-") || latestPairingCode;
+    res.send(`<!DOCTYPE html>
+<html><head><title>${BOT_NAME} Pairing</title></head>
+<body style="font-family:sans-serif;text-align:center;padding:40px;background:#f5f5f5">
+  <h2>🔑 Pairing Code</h2>
+  <p>Open WhatsApp → Settings → Linked Devices → <b>Link with phone number</b></p>
+  <div style="font-size:3em;font-weight:bold;letter-spacing:8px;margin:30px;color:#075e54">${code}</div>
+  <p style="color:#888;font-size:13px">Phone: ${OWNER_PHONE} | Code expires in ~60s</p>
+  <script>setTimeout(()=>location.reload(),30000)</script>
+</body></html>`);
 });
 
 app.get("/qr", async (_req, res) => {
