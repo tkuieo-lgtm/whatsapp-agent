@@ -333,9 +333,12 @@ async function connectToWhatsApp() {
                 } else {
                     _pairingRequested = true;
                     try {
+                        // NOTE: calling requestPairingCode during "connecting" state is correct.
+                        // Baileys "connecting" = WS TCP open but session not yet authenticated.
+                        // "open" only fires AFTER successful auth — too late to request pairing code.
+                        console.log(`[PAIR] Requesting code (connectionState=${connectionState} — expected: connecting)`);
                         const code = await sock.requestPairingCode(AGENT_PHONE);
                         latestPairingCode = code;
-                        // Log raw value so we can verify format before any processing
                         console.log(`[PAIR] Raw code from Baileys: ${JSON.stringify(code)} length=${code?.length} type=${typeof code}`);
                         console.log(`[PAIR] Code for agent ${AGENT_PHONE}: ${code}`);
                         console.log("[PAIR] WhatsApp → Settings → Linked Devices → Link with phone number");
