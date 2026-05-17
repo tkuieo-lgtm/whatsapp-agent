@@ -275,13 +275,17 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
         version,
         auth: state,
-        printQRInTerminal: false,   // never print QR in terminal (Railway has no tty)
+        printQRInTerminal: false,
         logger: silentLogger,
-        browser: ["Ubuntu", "Chrome", "20.0.04"],
+        browser: ["Ubuntu", "Chrome", "20.0.04"],  // = Browsers.ubuntu('Chrome') — Baileys default
         syncFullHistory: false,
+        connectTimeoutMs: 60_000,        // 60s — keeps socket alive through pairing handshake
+        defaultQueryTimeoutMs: 60_000,   // same for query timeouts
+        retryRequestDelayMs: 250,        // retry delay if WS request needs retry
         keepAliveIntervalMs: 20_000,
         getMessage: async (_key) => ({ conversation: "" }),
     });
+    console.log(`[WHATSAPP] makeWASocket created — version=${version.join(".")} agent=${AGENT_PHONE}`);
 
     // Build lid→phone map from contact sync (fires during connection init)
     sock.ev.on("contacts.upsert", (contacts) => {
