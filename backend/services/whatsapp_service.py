@@ -39,7 +39,7 @@ async def send_voice_message(text: str, chat_id: Optional[str] = None) -> bool:
         return False
 
     audio_b64 = base64.b64encode(audio_bytes).decode()
-    target    = chat_id or f"{settings.owner_phone}@c.us"
+    target    = chat_id or f"{settings.owner_phone}@s.whatsapp.net"
     payload   = {"to": target, "audio": audio_b64, "mime": "audio/ogg; codecs=opus"}
 
     logger.info(f"[TTS] Sending voice note to {target} ({len(audio_bytes)} bytes)")

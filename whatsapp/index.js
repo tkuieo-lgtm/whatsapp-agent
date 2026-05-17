@@ -131,8 +131,7 @@ function jidToPhone(jid) {
 }
 
 function normalizeJid(jid) {
-    // Backend sends @c.us (whatsapp-web.js format) — Baileys uses @s.whatsapp.net
-    if (jid.endsWith("@c.us")) return jid.replace("@c.us", "@s.whatsapp.net");
+    if (jid.endsWith("@c.us")) return jid.replace("@c.us", "@s.whatsapp.net");  // normalize legacy format
     if (jid.endsWith("@g.us")) return jid;  // groups unchanged
     if (jid.includes("@")) return jid;
     return `${jid.replace(/\D/g, "")}@s.whatsapp.net`;
