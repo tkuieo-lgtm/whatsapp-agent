@@ -234,6 +234,7 @@ function scheduleSave() {
 // ---------------------------------------------------------------------------
 let latestQR              = null;
 let latestPairingCode     = null;
+let latestPairingCodeAt   = null;   // epoch ms of last requestPairingCode call
 let sock                  = null;
 let isConnected           = false;
 let connectionState       = "disconnected";   // "disconnected" | "connecting" | "open"
@@ -326,27 +327,20 @@ async function connectToWhatsApp() {
                 // Already connected — ignore spurious qr events (prevent accidental re-pairing)
                 console.warn("[PAIR] qr event ignored — already connected");
             } else if (USE_PAIRING_CODE && !state.creds.registered) {
-                if (_pairingRequested) {
-                    // WhatsApp refreshes the QR every ~20s. Calling requestPairingCode again
-                    // would invalidate the current code. Request only once per session.
-                    console.log(`[PAIR] qr refresh ignored — code already issued (still valid ~160s)`);
-                } else {
-                    _pairingRequested = true;
-                    try {
-                        // NOTE: calling requestPairingCode during "connecting" state is correct.
-                        // Baileys "connecting" = WS TCP open but session not yet authenticated.
-                        // "open" only fires AFTER successful auth — too late to request pairing code.
-                        console.log(`[PAIR] Requesting code (connectionState=${connectionState} — expected: connecting)`);
-                        const code = await sock.requestPairingCode(AGENT_PHONE);
-                        latestPairingCode = code;
-                        console.log(`[PAIR] Raw code from Baileys: ${JSON.stringify(code)} length=${code?.length} type=${typeof code}`);
-                        console.log(`[PAIR] Code for agent ${AGENT_PHONE}: ${code}`);
-                        console.log("[PAIR] WhatsApp → Settings → Linked Devices → Link with phone number");
-                        console.log("[PAIR] Code valid for ~160 seconds");
-                    } catch (e) {
-                        _pairingRequested = false;   // allow retry on next qr event if this failed
-                        console.error("[PAIR] requestPairingCode failed:", e.message);
-                    }
+                // Request a fresh code on EVERY qr event.
+                // WhatsApp closes connection with 408 after N QR cycles (~100s) if we don't.
+                // Requesting a new code each cycle resets WhatsApp's attempt counter.
+                // The /pair page auto-refreshes every 15s so the user always sees the latest code.
+                _pairingRequested = true;
+                try {
+                    const code = await sock.requestPairingCode(AGENT_PHONE);
+                    latestPairingCode = code;
+                    latestPairingCodeAt = Date.now();
+                    console.log(`[PAIR] Code refreshed: ${JSON.stringify(code)} length=${code?.length}`);
+                    console.log(`[PAIR] Open /pair — code rotates every ~20s, page auto-refreshes`);
+                } catch (e) {
+                    _pairingRequested = false;
+                    console.error("[PAIR] requestPairingCode failed:", e.message);
                 }
             } else {
                 latestQR = qr;
@@ -676,16 +670,17 @@ app.get("/pair", (_req, res) => {
     }
     const raw       = latestPairingCode;
     const formatted = raw.match(/.{1,4}/g)?.join("-") || raw;
+    const ageSec    = latestPairingCodeAt ? Math.floor((Date.now() - latestPairingCodeAt) / 1000) : "?";
     res.send(`<!DOCTYPE html>
 <html><head><title>${BOT_NAME} Pairing</title></head>
 <body style="font-family:sans-serif;text-align:center;padding:40px;background:#f5f5f5">
   <h2>🔑 Pairing Code</h2>
   <p>Open WhatsApp → Settings → Linked Devices → <b>Link with phone number</b></p>
   <div style="font-size:3em;font-weight:bold;letter-spacing:8px;margin:30px;color:#075e54">${formatted}</div>
-  <p style="color:#555;font-size:14px">Enter exactly as shown (no hyphens needed in WhatsApp)</p>
-  <p style="color:#888;font-size:12px;font-family:monospace">Raw: ${raw} (${raw.length} chars)</p>
-  <p style="color:#888;font-size:13px">Agent phone: ${AGENT_PHONE} | Valid ~160 seconds</p>
-  <script>setTimeout(()=>location.reload(),30000)</script>
+  <p style="color:#555;font-size:14px">Enter without hyphens — code rotates every ~20s, enter quickly</p>
+  <p style="color:#888;font-size:12px;font-family:monospace">Raw: ${raw} (${raw.length} chars) | age: ${ageSec}s</p>
+  <p style="color:#888;font-size:13px">Agent: ${AGENT_PHONE}</p>
+  <script>setTimeout(()=>location.reload(),15000)</script>
 </body></html>`);
 });
 
