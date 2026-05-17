@@ -532,9 +532,9 @@ app.post("/send", async (req, res) => {
     const { phone, message, chat_id } = req.body;
     if (!message) return res.status(400).json({ error: "message is required" });
     try {
-        const jid = chat_id ? normalizeJid(chat_id) : normalizeJid(phone || OWNER_PHONE);
-        await sock.sendMessage(jid, { text: message });
-        console.log(`[SEND] → ${jid}`);
+        const jid  = chat_id ? normalizeJid(chat_id) : normalizeJid(phone || OWNER_PHONE);
+        const sent = await sock.sendMessage(jid, { text: message });
+        console.log(`[SEND] → ${jid} | status=${sent?.status} id=${sent?.key?.id}`);
         res.json({ success: true });
     } catch (err) {
         console.error("[SEND] Failed:", err.message);
@@ -549,12 +549,12 @@ app.post("/send-voice", async (req, res) => {
     try {
         const jid    = normalizeJid(to);
         const buffer = Buffer.from(audio, "base64");
-        await sock.sendMessage(jid, {
+        const sent   = await sock.sendMessage(jid, {
             audio: buffer,
             mimetype: "audio/ogg; codecs=opus",
-            ptt: true,   // voice note with waveform display
+            ptt: true,
         });
-        console.log(`[VOICE-OUT] Sent to ${jid}`);
+        console.log(`[VOICE-OUT] → ${jid} | status=${sent?.status} id=${sent?.key?.id}`);
         res.json({ status: "sent" });
     } catch (err) {
         console.error("[VOICE-OUT] Failed:", err.message);
