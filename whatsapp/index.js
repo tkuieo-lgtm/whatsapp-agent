@@ -292,25 +292,6 @@ async function connectToWhatsApp() {
     });
     console.log(`[WHATSAPP] makeWASocket created — version=${version.join(".")} agent=${AGENT_PHONE}`);
 
-    // Pairing code: request 3s after socket creation (WS needs time to establish).
-    // This is the approach confirmed working in Baileys examples.
-    // The qr event handler is kept as fallback in case the socket isn't ready in 3s.
-    if (USE_PAIRING_CODE && !state.creds.registered) {
-        setTimeout(async () => {
-            if (_pairingRequested) return;  // already requested via qr event
-            _pairingRequested = true;
-            try {
-                const code = await sock.requestPairingCode(AGENT_PHONE);
-                latestPairingCode = code;
-                latestPairingCodeAt = Date.now();
-                console.log(`[PAIR] Code (setTimeout): ${JSON.stringify(code)} length=${code?.length}`);
-                console.log("[PAIR] Open /pair — code valid until next qr event (~5 min)");
-            } catch (e) {
-                _pairingRequested = false;
-                console.error("[PAIR] setTimeout requestPairingCode failed:", e.message);
-            }
-        }, 3000);
-    }
 
     // Build lid→phone map from contact sync (fires during connection init)
     sock.ev.on("contacts.upsert", (contacts) => {
@@ -324,10 +305,11 @@ async function connectToWhatsApp() {
         console.log(`[LID] contacts.upsert: ${contacts.length} contacts, mapped ${mapped} — total ${lidMap.size}`);
     });
 
-    // Persist credentials on every update — debounced to prevent DB flooding
+    // Persist credentials — ensure dir exists before writing (loggedOut deletes it)
     sock.ev.on("creds.update", async () => {
+        fs.mkdirSync(SESSION_DIR, { recursive: true });
         await saveCreds();
-        scheduleSave();   // debounced 30 s — NOT immediate
+        scheduleSave();
     });
 
     console.log(`[CONN] Socket created — waiting for connection.update events`);
