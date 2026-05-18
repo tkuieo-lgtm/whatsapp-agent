@@ -6,6 +6,7 @@ const {
     useMultiFileAuthState,
     fetchLatestBaileysVersion,
     downloadMediaMessage,
+    Browsers,
 } = require("@whiskeysockets/baileys");
 const { Boom } = require("@hapi/boom");
 const express = require("express");
@@ -278,7 +279,7 @@ async function connectToWhatsApp() {
         auth: state,
         printQRInTerminal: false,
         logger: silentLogger,
-        browser: ["Ubuntu", "Chrome", "20.0.04"],  // = Browsers.ubuntu('Chrome') — Baileys default
+        browser: Browsers.appropriate("Desktop"),  // ['Mac OS', 'Desktop', '23.6.0']
         syncFullHistory: false,
         connectTimeoutMs: 60_000,
         defaultQueryTimeoutMs: 60_000,
