@@ -255,11 +255,13 @@ function markSeen(id) {
     setTimeout(() => seen.delete(id), 30_000);
 }
 
-// Minimal silent logger for Baileys
+// Baileys logger — show WARN/ERROR so internal issues are visible
 const silentLogger = {
-    level: "silent",
+    level: "warn",
     trace: () => {}, debug: () => {}, info: () => {},
-    warn: () => {}, error: () => {}, fatal: () => {},
+    warn:  (obj, msg) => console.warn("[BAILEYS]", msg ?? obj),
+    error: (obj, msg) => console.error("[BAILEYS]", msg ?? obj),
+    fatal: (obj, msg) => console.error("[BAILEYS FATAL]", msg ?? obj),
     child: () => silentLogger,
 };
 
@@ -289,6 +291,26 @@ async function connectToWhatsApp() {
         getMessage: async (_key) => ({ conversation: "" }),
     });
     console.log(`[WHATSAPP] makeWASocket created — version=${version.join(".")} agent=${AGENT_PHONE}`);
+
+    // Pairing code: request 3s after socket creation (WS needs time to establish).
+    // This is the approach confirmed working in Baileys examples.
+    // The qr event handler is kept as fallback in case the socket isn't ready in 3s.
+    if (USE_PAIRING_CODE && !state.creds.registered) {
+        setTimeout(async () => {
+            if (_pairingRequested) return;  // already requested via qr event
+            _pairingRequested = true;
+            try {
+                const code = await sock.requestPairingCode(AGENT_PHONE);
+                latestPairingCode = code;
+                latestPairingCodeAt = Date.now();
+                console.log(`[PAIR] Code (setTimeout): ${JSON.stringify(code)} length=${code?.length}`);
+                console.log("[PAIR] Open /pair — code valid until next qr event (~5 min)");
+            } catch (e) {
+                _pairingRequested = false;
+                console.error("[PAIR] setTimeout requestPairingCode failed:", e.message);
+            }
+        }, 3000);
+    }
 
     // Build lid→phone map from contact sync (fires during connection init)
     sock.ev.on("contacts.upsert", (contacts) => {
@@ -358,8 +380,15 @@ async function connectToWhatsApp() {
             isConnected   = true;
             reconnectAttempts = 0;
             _failedState  = false;
-            console.log(`[WHATSAPP] ${BOT_NAME} connected!`);
+            console.log(`[WHATSAPP] ${BOT_NAME} connected! isNewLogin=${isNewLogin}`);
             await saveSessionToDB();
+
+            // On reconnects (existing session), receivedPendingNotifications never fires.
+            // Only fresh pairings (isNewLogin=true) need to wait for it.
+            if (!isNewLogin) {
+                deviceReady = true;
+                console.log("[CONN] Existing session reconnected — deviceReady=true immediately");
+            }
 
             // Resolve owner's @lid immediately after connect
             setTimeout(resolveOwnerLid, 3000);
