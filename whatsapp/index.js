@@ -246,6 +246,7 @@ const BACKOFF_MS          = [30_000, 60_000, 120_000];
 const MAX_BACKOFF         = 5 * 60_000;
 // 401 rate-limit guard: track timestamps of recent loggedOut events
 const _401timestamps      = [];
+let   _warmingUp          = false;   // true for 60s after connection=open
 const seen                = new Set();
 
 function markSeen(id) {
@@ -358,8 +359,14 @@ async function connectToWhatsApp() {
                 console.log("[CONN] Existing session reconnected — deviceReady=true immediately");
             }
 
-            // LID mapping comes from contacts.upsert — no extra onWhatsApp() call needed
-            // (removed: sock.onWhatsApp() immediately after connect was a potential ban trigger)
+            // Warmup: defer message processing for 60s after connect to let
+            // WhatsApp finish device provisioning without triggering rate limits
+            _warmingUp = true;
+            console.log("[WARMUP] Waiting 60s before processing messages");
+            setTimeout(() => {
+                _warmingUp = false;
+                console.log("[WARMUP] Done — now processing incoming messages");
+            }, 60_000);
 
             // Manual keepalive: send presence update every 20 s
             if (keepAliveInterval) clearInterval(keepAliveInterval);
@@ -373,6 +380,7 @@ async function connectToWhatsApp() {
         if (connection === "close") {
             isConnected  = false;
             deviceReady  = false;
+            _warmingUp   = false;
             if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
 
             const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
@@ -386,11 +394,12 @@ async function connectToWhatsApp() {
 
                 if (_401timestamps.length >= 2) {
                     _failedState = true;
-                    console.error("[WHATSAPP] Two 401s within 60s — halting to avoid ban. Visit /qr after waiting.");
+                    console.error("[FATAL] Too many 401s — manual intervention required. Halting all reconnects.");
+                    console.error("[FATAL] Wait 24-48h before attempting a new QR scan.");
                     try {
                         await axios.post(`${BACKEND_URL}/webhook/alert`, {
                             source: "whatsapp_bridge",
-                            message: "⚠️ WhatsApp חסם את החיבור (2× 401 תוך 60 שניות). המתן 24-48 שעות לפני ניסיון חדש.",
+                            message: "⚠️ [FATAL] WhatsApp חסם את החיבור (2× 401 תוך 60 שניות). נדרשת התערבות ידנית — המתן 24-48 שעות לפני ניסיון חדש.",
                         }, { timeout: 5000 });
                     } catch (_) {}
                     return;
@@ -449,6 +458,10 @@ async function connectToWhatsApp() {
     // Incoming messages
     // ---------------------------------------------------------------------------
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
+        if (_warmingUp) {
+            console.log(`[WARMUP] Skipping ${messages.length} message(s) — still in warmup period`);
+            return;   // don't mark as seen — WhatsApp retries will be processed after warmup
+        }
         // Raw diagnostic log — before ANY filtering
         console.log(`[MSG] Raw event received: ${messages.length} message(s), type=${type}`);
 
