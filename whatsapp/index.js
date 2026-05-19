@@ -244,6 +244,8 @@ let reconnectAttempts     = 0;
 const MAX_RECONNECT       = 10;
 const BACKOFF_MS          = [30_000, 60_000, 120_000];
 const MAX_BACKOFF         = 5 * 60_000;
+// 401 rate-limit guard: track timestamps of recent loggedOut events
+const _401timestamps      = [];
 const seen                = new Set();
 
 function markSeen(id) {
@@ -356,8 +358,8 @@ async function connectToWhatsApp() {
                 console.log("[CONN] Existing session reconnected — deviceReady=true immediately");
             }
 
-            // Resolve owner's @lid immediately after connect
-            setTimeout(resolveOwnerLid, 3000);
+            // LID mapping comes from contacts.upsert — no extra onWhatsApp() call needed
+            // (removed: sock.onWhatsApp() immediately after connect was a potential ban trigger)
 
             // Manual keepalive: send presence update every 20 s
             if (keepAliveInterval) clearInterval(keepAliveInterval);
@@ -377,6 +379,23 @@ async function connectToWhatsApp() {
             console.log(`[WHATSAPP] Disconnected — code: ${code}`);
 
             if (code === DisconnectReason.loggedOut) {
+                const now = Date.now();
+                _401timestamps.push(now);
+                // Keep only events in the last 60 seconds
+                while (_401timestamps.length && now - _401timestamps[0] > 60_000) _401timestamps.shift();
+
+                if (_401timestamps.length >= 2) {
+                    _failedState = true;
+                    console.error("[WHATSAPP] Two 401s within 60s — halting to avoid ban. Visit /qr after waiting.");
+                    try {
+                        await axios.post(`${BACKEND_URL}/webhook/alert`, {
+                            source: "whatsapp_bridge",
+                            message: "⚠️ WhatsApp חסם את החיבור (2× 401 תוך 60 שניות). המתן 24-48 שעות לפני ניסיון חדש.",
+                        }, { timeout: 5000 });
+                    } catch (_) {}
+                    return;
+                }
+
                 console.log("[WHATSAPP] Logged out (401) — clearing DB + local session files + LID map");
                 lidMap.clear();
                 // Clear DB
