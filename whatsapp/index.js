@@ -243,6 +243,23 @@ const silentLogger = {
 };
 
 // ---------------------------------------------------------------------------
+// WhatsApp version — fetched once at startup, reused on reconnects
+// ---------------------------------------------------------------------------
+let _waVersion = null;
+async function getWAVersion() {
+    if (_waVersion) return _waVersion;
+    try {
+        const { version } = await fetchLatestBaileysVersion();
+        _waVersion = version;
+        console.log(`[WHATSAPP] Baileys version: ${version.join(".")}`);
+    } catch (e) {
+        console.error("[WHATSAPP] fetchLatestBaileysVersion failed:", e.message);
+        _waVersion = [2, 3000, 1014080102];   // fallback to known-good version
+    }
+    return _waVersion;
+}
+
+// ---------------------------------------------------------------------------
 // WhatsApp connection
 // ---------------------------------------------------------------------------
 async function connectToWhatsApp() {
@@ -253,8 +270,7 @@ async function connectToWhatsApp() {
     }
     fs.mkdirSync(SESSION_DIR, { recursive: true });
 
-    const { version } = await fetchLatestBaileysVersion();
-    console.log(`[WHATSAPP] Using Baileys version ${version.join(".")}`);
+    const version = await getWAVersion();
 
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
 
@@ -277,12 +293,13 @@ async function connectToWhatsApp() {
         auth: state,
         printQRInTerminal: false,
         logger: silentLogger,
-        browser: Browsers.appropriate("Desktop"),
+        browser: Browsers.macOS("Safari"),     // standard, less flagged than "Desktop"
         syncFullHistory: false,
         connectTimeoutMs: 60_000,
         defaultQueryTimeoutMs: 60_000,
-        keepAliveIntervalMs: 20_000,
-        getMessage: async (_key) => ({ conversation: "" }),
+        keepAliveIntervalMs: 30_000,           // 30s — 20s caused 428 disconnects after ~24h
+        markOnlineOnConnect: false,            // don't broadcast "online" on every reconnect
+        getMessage: async (_key) => undefined, // let Baileys handle missing messages internally
         ...(proxyAgent ? { agent: proxyAgent } : {}),
     });
     console.log(`[WHATSAPP] makeWASocket created — version=${version.join(".")}`);
