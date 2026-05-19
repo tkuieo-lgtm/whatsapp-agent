@@ -246,6 +246,11 @@ const silentLogger = {
 // WhatsApp connection
 // ---------------------------------------------------------------------------
 async function connectToWhatsApp() {
+    // Remove all listeners from the previous socket before creating a new one
+    // to prevent event handler accumulation across reconnects
+    if (sock) {
+        try { sock.ev.removeAllListeners(); } catch (_) {}
+    }
     fs.mkdirSync(SESSION_DIR, { recursive: true });
 
     const { version } = await fetchLatestBaileysVersion();
@@ -286,10 +291,15 @@ async function connectToWhatsApp() {
     // Build lid→phone map from contact sync (fires during connection init)
     sock.ev.on("contacts.upsert", (contacts) => {
         let mapped = 0;
+        const ownerLast9 = OWNER_PHONE.slice(-9);
         for (const c of contacts) {
             if (c.id && c.lid) {
                 lidMap.set(c.lid, c.id);
                 mapped++;
+                // Persist owner's LID to DB so it survives restarts
+                if (c.id.replace(/@[^@]+$/, "").slice(-9) === ownerLast9) {
+                    _saveLidToDB(c.lid, c.id);
+                }
             }
         }
         console.log(`[LID] contacts.upsert: ${contacts.length} contacts, mapped ${mapped} — total ${lidMap.size}`);
@@ -432,8 +442,8 @@ async function connectToWhatsApp() {
     // ---------------------------------------------------------------------------
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
         if (_warmingUp) {
-            console.log(`[WARMUP] Skipping ${messages.length} message(s) — still in warmup period`);
-            return;   // don't mark as seen — WhatsApp retries will be processed after warmup
+            console.log(`[WARMUP] Skipping ${messages.length} message(s) — warmup active (messages not retried by WA)`);
+            return;
         }
         // Raw diagnostic log — before ANY filtering
         console.log(`[MSG] Raw event received: ${messages.length} message(s), type=${type}`);
