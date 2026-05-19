@@ -255,13 +255,20 @@ function markSeen(id) {
     setTimeout(() => seen.delete(id), 30_000);
 }
 
-// Baileys logger — show WARN/ERROR so internal issues are visible
+// Full debug logger — captures all Baileys internals for pairing diagnosis
+const _fmt = (obj, msg) => {
+    const base = msg ?? (typeof obj === "string" ? obj : JSON.stringify(obj));
+    const extra = (msg && obj && typeof obj === "object") ? " " + JSON.stringify(obj) : "";
+    return base + extra;
+};
 const silentLogger = {
-    level: "warn",
-    trace: () => {}, debug: () => {}, info: () => {},
-    warn:  (obj, msg) => console.warn("[BAILEYS]", msg ?? obj),
-    error: (obj, msg) => console.error("[BAILEYS]", msg ?? obj),
-    fatal: (obj, msg) => console.error("[BAILEYS FATAL]", msg ?? obj),
+    level: "debug",
+    trace: () => {},
+    debug: (obj, msg) => console.log("[BA:DBG]", _fmt(obj, msg)),
+    info:  (obj, msg) => console.log("[BA:INF]", _fmt(obj, msg)),
+    warn:  (obj, msg) => console.warn("[BA:WRN]", _fmt(obj, msg)),
+    error: (obj, msg) => console.error("[BA:ERR]", _fmt(obj, msg)),
+    fatal: (obj, msg) => console.error("[BA:FAT]", _fmt(obj, msg)),
     child: () => silentLogger,
 };
 
