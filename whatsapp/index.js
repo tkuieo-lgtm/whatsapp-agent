@@ -19,8 +19,9 @@ const QRCode  = require("qrcode");
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const OWNER_PHONE      = (process.env.OWNER_PHONE || "").replace(/\D/g, "");  // owner identity (message filtering)
-const AGENT_PHONE      = (process.env.AGENT_PHONE || OWNER_PHONE).replace(/\D/g, "");  // WA account running the bot (pairing)
+const OWNER_PHONE      = (process.env.OWNER_PHONE || "").replace(/\D/g, "");
+const AGENT_PHONE      = (process.env.AGENT_PHONE || OWNER_PHONE).replace(/\D/g, "");
+const PROXY_URL        = process.env.PROXY_URL || "";  // e.g. socks5://user:pass@host:port
 const BOT_NAME         = process.env.BOT_NAME || "מקס";
 const BACKEND_URL      = process.env.BACKEND_URL || "http://localhost:8000";
 const DATABASE_URL     = process.env.DATABASE_URL;
@@ -283,19 +284,34 @@ async function connectToWhatsApp() {
 
     const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
 
+    // Build proxy agent if PROXY_URL is set (socks5:// or http://)
+    let proxyAgent;
+    if (PROXY_URL) {
+        const url = new URL(PROXY_URL);
+        if (url.protocol.startsWith("socks")) {
+            const { SocksProxyAgent } = await import("socks-proxy-agent");
+            proxyAgent = new SocksProxyAgent(PROXY_URL);
+        } else {
+            const { HttpsProxyAgent } = await import("https-proxy-agent");
+            proxyAgent = new HttpsProxyAgent(PROXY_URL);
+        }
+        console.log(`[PROXY] Using proxy: ${url.protocol}//${url.host}`);
+    }
+
     sock = makeWASocket({
         version,
         auth: state,
         printQRInTerminal: false,
         logger: silentLogger,
-        browser: Browsers.appropriate("Desktop"),  // ['Mac OS', 'Desktop', '23.6.0']
+        browser: Browsers.appropriate("Desktop"),
         syncFullHistory: false,
         connectTimeoutMs: 60_000,
         defaultQueryTimeoutMs: 60_000,
         retryRequestDelayMs: 250,
-        qrTimeout: 300_000,   // 5 min per ref × ~5 refs = ~25 min total before 408
+        qrTimeout: 300_000,
         keepAliveIntervalMs: 20_000,
         getMessage: async (_key) => ({ conversation: "" }),
+        ...(proxyAgent ? { agent: proxyAgent } : {}),
     });
     console.log(`[WHATSAPP] makeWASocket created — version=${version.join(".")} agent=${AGENT_PHONE}`);
 

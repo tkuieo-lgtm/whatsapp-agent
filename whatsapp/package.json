@@ -12,8 +12,10 @@
     "axios": "^1.7.0",
     "dotenv": "^17.4.2",
     "express": "^4.19.0",
+    "https-proxy-agent": "^9.0.0",
     "pg": "^8.13.0",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "socks-proxy-agent": "^10.0.0"
   },
   "engines": {
     "node": ">=18"
