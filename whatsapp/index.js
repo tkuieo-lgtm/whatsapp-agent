@@ -184,26 +184,6 @@ async function _loadLidFromDB() {
     }
 }
 
-async function resolveOwnerLid() {
-    if (!sock || !isConnected) return;
-    try {
-        const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
-        const results  = await sock.onWhatsApp(OWNER_PHONE);
-        if (!results || !results.length) {
-            console.warn("[LID] sock.onWhatsApp returned empty — owner not on WA?");
-            return;
-        }
-        const info = results[0];
-        console.log(`[LID] onWhatsApp result: exists=${info.exists} jid=${info.jid} lid=${info.lid}`);
-        if (info.lid) {
-            lidMap.set(info.lid, ownerJid);
-            await _saveLidToDB(info.lid, ownerJid);
-            console.log(`[LID] Owner LID mapped: ${info.lid} → ${ownerJid}`);
-        }
-    } catch (e) {
-        console.warn(`[LID] resolveOwnerLid failed: ${e.message}`);
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Bot JID helper — used for group mention detection
@@ -238,7 +218,6 @@ let isConnected    = false;
 let connectionState = "disconnected";
 let deviceReady    = false;
 let lastOwnerJid   = null;
-let keepAliveInterval     = null;
 let _sessionBackupInterval = null;   // module-level — only one interval ever
 let reconnectAttempts     = 0;
 const MAX_RECONNECT       = 10;
@@ -368,20 +347,14 @@ async function connectToWhatsApp() {
                 console.log("[WARMUP] Done — now processing incoming messages");
             }, 60_000);
 
-            // Manual keepalive: send presence update every 20 s
-            if (keepAliveInterval) clearInterval(keepAliveInterval);
-            keepAliveInterval = setInterval(async () => {
-                if (!isConnected || !sock) return;
-                try { await sock.sendPresenceUpdate("available"); }
-                catch (_) { /* ignore — WS ping failures are non-fatal */ }
-            }, 20_000);
+            // keepAliveIntervalMs: 20_000 in makeWASocket handles WS pings internally.
+            // No manual setInterval needed — removed to avoid double keepalive.
         }
 
         if (connection === "close") {
             isConnected  = false;
             deviceReady  = false;
             _warmingUp   = false;
-            if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
 
             const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
             console.log(`[WHATSAPP] Disconnected — code: ${code}`);
@@ -675,7 +648,6 @@ app.post("/reset-session", async (_req, res) => {
     // 3. Clear LID map
     lidMap.clear();
     // 4. Close existing socket and reconnect
-    if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
     isConnected = false;
     reconnectAttempts = 0;
     _failedState = false;
