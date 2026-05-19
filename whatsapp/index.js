@@ -19,15 +19,13 @@ const QRCode  = require("qrcode");
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const OWNER_PHONE      = (process.env.OWNER_PHONE || "").replace(/\D/g, "");
-const AGENT_PHONE      = (process.env.AGENT_PHONE || OWNER_PHONE).replace(/\D/g, "");
-const PROXY_URL        = process.env.PROXY_URL || "";  // e.g. socks5://user:pass@host:port
-const BOT_NAME         = process.env.BOT_NAME || "מקס";
-const BACKEND_URL      = process.env.BACKEND_URL || "http://localhost:8000";
-const DATABASE_URL     = process.env.DATABASE_URL;
-const PORT             = process.env.PORT || 3000;
-const SESSION_DIR      = "./.baileys_auth";
-const USE_PAIRING_CODE = process.env.USE_PAIRING_CODE === "true";
+const OWNER_PHONE = (process.env.OWNER_PHONE || "").replace(/\D/g, "");
+const PROXY_URL   = process.env.PROXY_URL || "";
+const BOT_NAME    = process.env.BOT_NAME || "מקס";
+const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8000";
+const DATABASE_URL = process.env.DATABASE_URL;
+const PORT        = process.env.PORT || 3000;
+const SESSION_DIR = "./.baileys_auth";
 
 if (!OWNER_PHONE) {
     console.error("[ERROR] OWNER_PHONE is not set in .env");
@@ -234,15 +232,12 @@ function scheduleSave() {
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-let latestQR              = null;
-let latestPairingCode     = null;
-let latestPairingCodeAt   = null;   // epoch ms of last requestPairingCode call
-let sock                  = null;
-let isConnected           = false;
-let connectionState       = "disconnected";   // "disconnected" | "connecting" | "open"
-let deviceReady           = false;            // true after receivedPendingNotifications — safe to send
-let _pairingRequested     = false;            // pairing code requested once per session — don't re-request on new qr events
-let lastOwnerJid          = null;             // actual JID from the last owner DM (may be @lid)
+let latestQR       = null;
+let sock           = null;
+let isConnected    = false;
+let connectionState = "disconnected";
+let deviceReady    = false;
+let lastOwnerJid   = null;
 let keepAliveInterval     = null;
 let _sessionBackupInterval = null;   // module-level — only one interval ever
 let reconnectAttempts     = 0;
@@ -256,20 +251,12 @@ function markSeen(id) {
     setTimeout(() => seen.delete(id), 30_000);
 }
 
-// Full debug logger — captures all Baileys internals for pairing diagnosis
-const _fmt = (obj, msg) => {
-    const base = msg ?? (typeof obj === "string" ? obj : JSON.stringify(obj));
-    const extra = (msg && obj && typeof obj === "object") ? " " + JSON.stringify(obj) : "";
-    return base + extra;
-};
 const silentLogger = {
-    level: "debug",
-    trace: () => {},
-    debug: (obj, msg) => console.log("[BA:DBG]", _fmt(obj, msg)),
-    info:  (obj, msg) => console.log("[BA:INF]", _fmt(obj, msg)),
-    warn:  (obj, msg) => console.warn("[BA:WRN]", _fmt(obj, msg)),
-    error: (obj, msg) => console.error("[BA:ERR]", _fmt(obj, msg)),
-    fatal: (obj, msg) => console.error("[BA:FAT]", _fmt(obj, msg)),
+    level: "warn",
+    trace: () => {}, debug: () => {}, info: () => {},
+    warn:  (obj, msg) => console.warn("[BAILEYS]", msg ?? obj),
+    error: (obj, msg) => console.error("[BAILEYS]", msg ?? obj),
+    fatal: (obj, msg) => console.error("[BAILEYS]", msg ?? obj),
     child: () => silentLogger,
 };
 
@@ -307,13 +294,11 @@ async function connectToWhatsApp() {
         syncFullHistory: false,
         connectTimeoutMs: 60_000,
         defaultQueryTimeoutMs: 60_000,
-        retryRequestDelayMs: 250,
-        qrTimeout: 300_000,
         keepAliveIntervalMs: 20_000,
         getMessage: async (_key) => ({ conversation: "" }),
         ...(proxyAgent ? { agent: proxyAgent } : {}),
     });
-    console.log(`[WHATSAPP] makeWASocket created — version=${version.join(".")} agent=${AGENT_PHONE}`);
+    console.log(`[WHATSAPP] makeWASocket created — version=${version.join(".")}`);
 
 
     // Build lid→phone map from contact sync (fires during connection init)
@@ -352,32 +337,8 @@ async function connectToWhatsApp() {
         }
 
         if (qr) {
-            if (connectionState === "open" || deviceReady) {
-                // Already connected — ignore spurious qr events (prevent accidental re-pairing)
-                console.warn("[PAIR] qr event ignored — already connected");
-            } else if (USE_PAIRING_CODE && !state.creds.registered) {
-                if (_pairingRequested) {
-                    // qrTimeout=300s means next QR fires only after 5 minutes — the
-                    // same code is still valid. Requesting again would invalidate it.
-                    console.log("[PAIR] qr refresh — keeping existing code (still valid)");
-                } else {
-                    _pairingRequested = true;
-                    try {
-                        const code = await sock.requestPairingCode(AGENT_PHONE);
-                        latestPairingCode = code;
-                        latestPairingCodeAt = Date.now();
-                        console.log(`[PAIR] Raw code: ${JSON.stringify(code)} length=${code?.length} type=${typeof code}`);
-                        console.log(`[PAIR] Code for agent ${AGENT_PHONE}: ${code}`);
-                        console.log("[PAIR] Open /pair — code valid until next qr event (~5 min)");
-                    } catch (e) {
-                        _pairingRequested = false;
-                        console.error("[PAIR] requestPairingCode failed:", e.message);
-                    }
-                }
-            } else {
-                latestQR = qr;
-                console.log("[QR] New QR received — open /qr in browser to scan");
-            }
+            latestQR = qr;
+            console.log("[QR] New QR received — open /qr in browser to scan");
         }
 
         if (connection === "open") {
@@ -408,9 +369,8 @@ async function connectToWhatsApp() {
         }
 
         if (connection === "close") {
-            isConnected       = false;
-            deviceReady       = false;
-            _pairingRequested = false;   // allow fresh pairing code on next connect attempt
+            isConnected  = false;
+            deviceReady  = false;
             if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
 
             const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
@@ -419,7 +379,6 @@ async function connectToWhatsApp() {
             if (code === DisconnectReason.loggedOut) {
                 console.log("[WHATSAPP] Logged out (401) — clearing DB + local session files + LID map");
                 lidMap.clear();
-                latestPairingCode = null;
                 // Clear DB
                 const pool = getPool();
                 if (pool) {
@@ -694,33 +653,6 @@ app.post("/reset-session", async (_req, res) => {
     }
     res.json({ success: true, message: "Session cleared — scan QR at /qr" });
     setTimeout(() => connectToWhatsApp(), 1000);
-});
-
-app.get("/pair", (_req, res) => {
-    if (isConnected) {
-        return res.send(`<h2 style="font-family:sans-serif;text-align:center;padding:40px">✅ ${BOT_NAME} is connected!</h2>`);
-    }
-    if (!latestPairingCode) {
-        return res.send(
-            `<h2 style="font-family:sans-serif;text-align:center;padding:40px">⏳ Requesting pairing code…</h2>` +
-            `<p style="text-align:center;color:#555">Make sure USE_PAIRING_CODE=true and the server just started.</p>` +
-            `<script>setTimeout(()=>location.reload(),3000)</script>`
-        );
-    }
-    const raw       = latestPairingCode;
-    const formatted = raw.match(/.{1,4}/g)?.join("-") || raw;
-    const ageSec    = latestPairingCodeAt ? Math.floor((Date.now() - latestPairingCodeAt) / 1000) : "?";
-    res.send(`<!DOCTYPE html>
-<html><head><title>${BOT_NAME} Pairing</title></head>
-<body style="font-family:sans-serif;text-align:center;padding:40px;background:#f5f5f5">
-  <h2>🔑 Pairing Code</h2>
-  <p>Open WhatsApp → Settings → Linked Devices → <b>Link with phone number</b></p>
-  <div style="font-size:3em;font-weight:bold;letter-spacing:8px;margin:30px;color:#075e54">${formatted}</div>
-  <p style="color:#555;font-size:14px">Enter without hyphens — code is stable for ~5 minutes</p>
-  <p style="color:#888;font-size:12px;font-family:monospace">Raw: ${raw} (${raw.length} chars) | age: ${ageSec}s</p>
-  <p style="color:#888;font-size:13px">Agent: ${AGENT_PHONE}</p>
-  <script>setTimeout(()=>location.reload(),30000)</script>
-</body></html>`);
 });
 
 app.get("/qr", async (_req, res) => {
