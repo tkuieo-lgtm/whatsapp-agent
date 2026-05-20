@@ -204,6 +204,44 @@ _TOOLS_DM: List[Dict] = [
         },
     },
     {
+        "name": "save_contact",
+        "description": "שמור או עדכן איש קשר: שם, טלפון, מייל. קרא אוטומטית כשמשתמש מזכיר שם ומספר חדש.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phone":  {"type": "string", "description": "מספר טלפון (ספרות בלבד)"},
+                "name":   {"type": "string", "description": "שם מלא"},
+                "email":  {"type": "string", "description": "כתובת מייל (אופציונלי)"},
+                "notes":  {"type": "string", "description": "הערות נוספות (אופציונלי)"},
+            },
+            "required": ["phone", "name"],
+        },
+    },
+    {
+        "name": "get_contact",
+        "description": "חפש איש קשר לפי שם או מספר טלפון. מחזיר שם, טלפון, מייל.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "שם או מספר טלפון לחיפוש"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "save_group",
+        "description": "שמור פרטי קבוצת WhatsApp: שם הקבוצה ומזהה. קרא כשהמשתמש מבקש 'שמור את הקבוצה הזו'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "group_id":     {"type": "string", "description": "מזהה הקבוצה (JID)"},
+                "name":         {"type": "string", "description": "שם הקבוצה"},
+                "member_count": {"type": "integer", "description": "מספר חברים (אופציונלי)"},
+            },
+            "required": ["group_id", "name"],
+        },
+    },
+    {
         "name": "save_system_preference",
         "description": "שמור העדפה קבועה של הבעלים ב-system_notes. קרא לכלי זה אוטומטית כשהמשתמש מביע העדפה קבועה (שעות פנויות, סגנון תקשורת, כלל קבוע) — אפילו בלי לבקש במפורש לשמור.",
         "input_schema": {
@@ -450,6 +488,29 @@ async def _execute_tool(name: str, inp: Dict, is_group: bool = False, channel: s
                 await session.commit()
             formatted = remind_at.strftime("%d/%m/%Y %H:%M")
             return f"✅ תזכורת נקבעה: {inp['text']}\n🕐 {formatted}", False
+
+        if name == "save_contact":
+            from services.contact_service import save_contact
+            return await save_contact(
+                phone=inp["phone"], name=inp["name"],
+                email=inp.get("email"), notes=inp.get("notes"),
+            ), False
+
+        if name == "get_contact":
+            from services.contact_service import get_contact
+            c = await get_contact(inp["query"])
+            if not c:
+                return f"לא נמצא איש קשר עבור: {inp['query']}", False
+            email_str = f"\nמייל: {c['email']}" if c.get("email") else "\nמייל: לא ידוע — שאל את המשתמש"
+            notes_str = f"\nהערות: {c['notes']}" if c.get("notes") else ""
+            return f"📋 {c['name']} | טלפון: {c['phone']}{email_str}{notes_str}", False
+
+        if name == "save_group":
+            from services.contact_service import save_group
+            return await save_group(
+                group_id=inp["group_id"], name=inp["name"],
+                member_count=inp.get("member_count"),
+            ), False
 
         if name == "save_system_preference":
             from services.agent_state_service import append_system_preference

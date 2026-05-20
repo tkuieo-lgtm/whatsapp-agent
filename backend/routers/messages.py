@@ -126,6 +126,14 @@ async def _handle_message(msg: IncomingMessage) -> None:
             )
             return
 
+        # Auto-save group and sender contact if we have names
+        if msg.group_name:
+            from services.contact_service import save_group
+            await save_group(group_id=group_id, name=msg.group_name, channel="whatsapp")
+        if msg.group_sender_name and sender_phone and not is_owner(sender_phone):
+            from services.contact_service import save_contact
+            await save_contact(phone=sender_phone, name=msg.group_sender_name)
+
         try:
             response_text, _ = await process_message(
                 text,

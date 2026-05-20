@@ -164,6 +164,26 @@ class GroupInteraction(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class Contact(Base):
+    __tablename__ = "contacts"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    phone = Column(String(30), unique=True, nullable=False)
+    name = Column(String(100))
+    email = Column(String(200), nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class WAGroup(Base):
+    __tablename__ = "wa_groups"
+    group_id = Column(String(100), primary_key=True)
+    name = Column(String(200), nullable=True)
+    channel = Column(String(20), default="whatsapp")
+    member_count = Column(Integer, nullable=True)
+    saved_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 async def verify_tables() -> bool:
     try:
         async with engine.begin() as conn:

@@ -217,6 +217,23 @@ async function _loadLidFromDB() {
 
 
 // ---------------------------------------------------------------------------
+// Group metadata cache — avoid fetching name on every message
+// ---------------------------------------------------------------------------
+const groupNameCache = new Map();   // jid → name
+
+async function getGroupName(jid) {
+    if (groupNameCache.has(jid)) return groupNameCache.get(jid);
+    try {
+        const meta = await sock.groupMetadata(jid);
+        const name = meta?.subject || jid;
+        groupNameCache.set(jid, name);
+        return name;
+    } catch (_) {
+        return jid;   // fallback to JID if metadata fetch fails
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Bot JID helper — used for group mention detection
 // ---------------------------------------------------------------------------
 function getBotJid() {
@@ -414,6 +431,7 @@ async function connectToWhatsApp() {
             isConnected  = false;
             deviceReady  = false;
             _warmingUp   = false;
+            groupNameCache.clear();
 
             const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
             console.log(`[WHATSAPP] Disconnected — code: ${code}`);
@@ -559,13 +577,17 @@ async function connectToWhatsApp() {
                 console.log(`[GROUP] mention detected — forwarding: ${cleaned.slice(0, 80)}`);
 
                 try {
+                    const groupName      = await getGroupName(rawJid);
+                    const senderPushName = msg.pushName || "";
                     await axios.post(`${BACKEND_URL}/webhook/message`, {
                         sender: OWNER_PHONE,
                         message: cleaned,
                         timestamp: new Date().toISOString(),
                         is_group: true,
                         group_id: jid,
+                        group_name: groupName,
                         group_sender: senderPhone,
+                        group_sender_name: senderPushName,
                     }, { timeout: 30000 });
                 } catch (err) {
                     console.error("[GROUP] Forward error:", err.message);
