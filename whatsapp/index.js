@@ -502,7 +502,20 @@ async function connectToWhatsApp() {
             const msgType = Object.keys(msg.message || {})[0] || "none";
             console.log(`[MSG] id=${msg.key?.id?.slice(-8)} jid=${msg.key?.remoteJid} fromMe=${fromMe} hasBody=${hasBody} type=${msgType} upsertType=${type}`);
 
-            if (type !== "notify") continue;   // skip history replay (type="append")
+            // notify = real-time; append = history replay OR missed messages from offline period.
+            // For append: only process messages newer than 5 minutes (missed while offline).
+            // For anything else: skip.
+            if (type === "append") {
+                const ts  = msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : 0;
+                const age = Date.now() - ts;
+                if (age > 5 * 60 * 1000) {
+                    console.log(`[MSG] Skipping old append message (age=${Math.floor(age / 1000)}s)`);
+                    continue;
+                }
+                console.log(`[MSG] Processing recent append message (age=${Math.floor(age / 1000)}s)`);
+            } else if (type !== "notify") {
+                continue;   // unknown type — skip
+            }
             if (fromMe) continue;
             if (!hasBody) continue;
 
