@@ -93,6 +93,50 @@ async def _handle_message(msg: IncomingMessage) -> None:
             await whatsapp_service.send_message(welcome, chat_id=reply_chat_id)
             return
 
+        # awaiting_intro: bot sent intro message, waiting for name + email
+        if group_member and group_member["status"] == "awaiting_intro":
+            name = msg.group_sender_name or ""
+            email = extract_email(text)
+            # Parse name from message if not from push name
+            if not name:
+                words = [w for w in text.split() if "@" not in w and len(w) > 1]
+                if words:
+                    name = " ".join(words[:3])
+            update_vals: dict = {}
+            if name:
+                update_vals["name"] = name
+            if email:
+                update_vals["email"] = email
+                update_vals["status"] = "pending_approval"
+            elif name:
+                update_vals["status"] = "awaiting_email"
+            if update_vals:
+                async with AsyncSessionLocal() as session:
+                    await session.execute(
+                        update(GroupMember)
+                        .where(GroupMember.phone == sender_phone)
+                        .where(GroupMember.group_id == group_id)
+                        .values(**update_vals)
+                    )
+                    await session.commit()
+            if email:
+                await whatsapp_service.send_message(
+                    f"📬 *חבר קבוצה חדש*\nשם: {name}\nטלפון: {sender_phone}\n"
+                    f"מייל: {email}\nקבוצה: {group_id}\n\nלאשר גישה? ענה *כן* או *לא*"
+                )
+                await whatsapp_service.send_message(
+                    f"תודה {name or ''}! הבקשה שלך ממתינה לאישור. נחכה לאישור.", chat_id=reply_chat_id
+                )
+            elif name:
+                await whatsapp_service.send_message(
+                    f"תודה {name}! מה כתובת המייל שלך?", chat_id=reply_chat_id
+                )
+            else:
+                await whatsapp_service.send_message(
+                    "מה שמך המלא וכתובת המייל שלך?", chat_id=reply_chat_id
+                )
+            return
+
         if group_member and group_member["status"] == "awaiting_email":
             email = extract_email(text)
             if email:
@@ -212,6 +256,59 @@ async def receive_message(msg: IncomingMessage, background_tasks: BackgroundTask
         return JSONResponse(status_code=200, content={"ok": True})
     background_tasks.add_task(_handle_message, msg)
     return {"ok": True}
+
+
+@router.post("/webhook/group-joined")
+async def group_joined(body: dict, background_tasks: BackgroundTasks):
+    """Called by Baileys bridge when bot is added to a new group."""
+    background_tasks.add_task(_handle_group_joined, body)
+    return {"ok": True}
+
+
+async def _handle_group_joined(body: dict) -> None:
+    group_id   = body.get("group_id", "")
+    group_name = body.get("group_name", group_id)
+    members    = body.get("members", [])
+
+    # Save group
+    from services.contact_service import save_group
+    await save_group(group_id=group_id, name=group_name, channel="whatsapp", member_count=len(members))
+    logger.info(f"[GROUP-JOIN] {group_name} ({group_id}) — {len(members)} members")
+
+    unknown = []
+    for m in members:
+        phone = m.get("phone", "")
+        if not phone or is_owner(phone):
+            continue
+        # Check if already in DB
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(GroupMember)
+                .where(GroupMember.phone == phone)
+                .where(GroupMember.group_id == group_id)
+            )
+            existing = result.scalar_one_or_none()
+        if existing:
+            continue   # already registered
+        # Create with awaiting_intro
+        async with AsyncSessionLocal() as session:
+            stmt = (
+                pg_insert(GroupMember)
+                .values(phone=phone, group_id=group_id, status="awaiting_intro")
+                .on_conflict_do_nothing()
+            )
+            await session.execute(stmt)
+            await session.commit()
+        unknown.append(m.get("jid", f"{phone}@s.whatsapp.net"))
+
+    if unknown:
+        intro = (
+            f"שלום לכולם! אני {settings.bot_name}, עוזר אישי של הבעלים 👋\n"
+            f"כדי שאוכל לעזור לכם — אשמח לדעת את שמכם ומייל.\n"
+            f"פשוט שלחו הודעה עם שמכם ומייל 😊"
+        )
+        await whatsapp_service.send_message(intro, chat_id=group_id)
+        logger.info(f"[GROUP-JOIN] Sent intro to {len(unknown)} unknown members in {group_id}")
 
 
 @router.post("/webhook/telegram")

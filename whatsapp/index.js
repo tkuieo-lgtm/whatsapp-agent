@@ -493,6 +493,38 @@ async function connectToWhatsApp() {
     });
 
     // ---------------------------------------------------------------------------
+    // Group participant changes — detect when bot joins a new group
+    // ---------------------------------------------------------------------------
+    sock.ev.on("group-participants.update", async ({ id, participants, action }) => {
+        if (action !== "add") return;
+        const botJid = getBotJid();
+        if (!botJid) return;
+        const botPhone = botJid.split("@")[0];
+        const botAdded = participants.some(p => p.split(":")[0].split("@")[0] === botPhone);
+        if (!botAdded) return;
+
+        console.log(`[GROUP] Bot added to group: ${id} — fetching members`);
+        try {
+            const meta = await sock.groupMetadata(id);
+            const members = meta.participants.map(p => ({
+                jid: p.id,
+                phone: (p.id || "").split("@")[0],
+                name: "",
+                is_admin: p.admin === "admin" || p.admin === "superadmin",
+            }));
+            await axios.post(`${BACKEND_URL}/webhook/group-joined`, {
+                group_id: id,
+                group_name: meta.subject || id,
+                member_count: members.length,
+                members,
+            }, { timeout: 30000 });
+            console.log(`[GROUP] Sent group-joined for ${id} (${members.length} members)`);
+        } catch (e) {
+            console.error("[GROUP] group-participants.update error:", e.message);
+        }
+    });
+
+    // ---------------------------------------------------------------------------
     // Outgoing message status updates (PENDING→SERVER_ACK→DELIVERY_ACK→READ)
     // ---------------------------------------------------------------------------
     sock.ev.on("messages.update", (updates) => {
@@ -687,8 +719,9 @@ app.post("/send", async (req, res) => {
         // Send directly to lastOwnerJid (may be @lid) — testing if WA prefers @lid for routing
         const jid = (!isGroupTarget && lastOwnerJid) ? lastOwnerJid : constructedJid;
         console.log(`[SEND] jid=${jid} msgLen=${message.length} constructedJid=${constructedJid} lastOwnerJid=${lastOwnerJid ?? "none"}`);
+        const mentions = Array.isArray(req.body.mentions) ? req.body.mentions : undefined;
         let sent, sendErr;
-        try { sent = await sock.sendMessage(jid, { text: message }); }
+        try { sent = await sock.sendMessage(jid, { text: message, ...(mentions ? { mentions } : {}) }); }
         catch (e) { sendErr = e; }
         console.log(`[SEND] response: status=${sent?.status} id=${sent?.key?.id} error=${sendErr?.message ?? "none"}`);
         console.log(`[SEND] full response: ${JSON.stringify(sent ?? null)}`);

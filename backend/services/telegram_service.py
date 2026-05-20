@@ -330,6 +330,44 @@ async def start_telegram_bot() -> None:
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
+    # ---------------------------------------------------------------------------
+    # Bot added to group
+    # ---------------------------------------------------------------------------
+    async def handle_my_chat_member(update: Update, context):
+        """Fires when bot's own membership changes in any chat."""
+        member = update.my_chat_member
+        if not member:
+            return
+        chat = member.chat
+        new_status = member.new_chat_member.status if member.new_chat_member else None
+        if chat.type not in ("group", "supergroup"):
+            return
+        if new_status not in ("member", "administrator"):
+            return   # bot was removed or restricted
+
+        chat_title = chat.title or str(chat.id)
+        group_key  = f"tg:{chat.id}"
+        logger.info(f"[TELEGRAM] Bot added to group: {chat_title} ({chat.id})")
+
+        # Save group to DB
+        from services.contact_service import save_group
+        await save_group(group_id=group_key, name=chat_title, channel="telegram")
+
+        # Send intro message
+        try:
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=(
+                    f"שלום לכולם! אני {settings.bot_name}, עוזר אישי של הבעלים 👋\n"
+                    f"כדי שאוכל לעזור לכם — שלחו לי הודעה עם שמכם ומייל.\n"
+                    f"פשוט כתבו @{context.bot.username} ושמכם + מייל 😊"
+                )
+            )
+        except Exception as e:
+            logger.warning(f"[TELEGRAM] Could not send group intro: {e}")
+
+    from telegram.ext import ChatMemberHandler
+    _app.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     _app.add_handler(CommandHandler("start", cmd_start))
     _app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     _app.add_handler(MessageHandler(filters.VOICE, handle_voice))
