@@ -267,9 +267,10 @@ function markSeen(id) {
 const silentLogger = {
     level: "warn",
     trace: () => {}, debug: () => {}, info: () => {},
-    warn:  (obj, msg) => console.warn("[BAILEYS]", msg ?? obj),
-    error: (obj, msg) => console.error("[BAILEYS]", msg ?? obj),
-    fatal: (obj, msg) => console.error("[BAILEYS]", msg ?? obj),
+    // Include full obj (contains attrs with error codes) not just message string
+    warn:  (obj, msg) => console.warn("[BAILEYS]", msg ?? "", typeof obj === "object" ? JSON.stringify(obj) : obj),
+    error: (obj, msg) => console.error("[BAILEYS]", msg ?? "", typeof obj === "object" ? JSON.stringify(obj) : obj),
+    fatal: (obj, msg) => console.error("[BAILEYS]", msg ?? "", typeof obj === "object" ? JSON.stringify(obj) : obj),
     child: () => silentLogger,
 };
 
@@ -478,10 +479,11 @@ async function connectToWhatsApp() {
     // ---------------------------------------------------------------------------
     sock.ev.on("messages.update", (updates) => {
         for (const { key, update } of updates) {
-            if (!key.fromMe) continue;   // only track our own sent messages
+            if (!key.fromMe) continue;
             const STATUS = { 0: "ERROR", 1: "PENDING", 2: "SERVER_ACK", 3: "DELIVERY_ACK", 4: "READ", 5: "PLAYED" };
             const s = update.status;
-            console.log(`[STATUS] id=${key.id?.slice(-8)} → ${STATUS[s] ?? s} (${s}) jid=${key.remoteJid}`);
+            const errParams = update.messageStubParameters;
+            console.log(`[STATUS] id=${key.id?.slice(-8)} → ${STATUS[s] ?? s} (${s}) jid=${key.remoteJid}${errParams ? ` errorCode=${JSON.stringify(errParams)}` : ""}`);
         }
     });
 
@@ -706,6 +708,28 @@ app.post("/send-voice", async (req, res) => {
         console.error("[VOICE-OUT] Failed:", err.message, err.stack?.split("\n")[1]);
         res.status(500).json({ error: err.message });
     }
+});
+
+// Diagnostic: send same text to both @lid and @s.whatsapp.net, compare ACK
+app.post("/send-test", async (_req, res) => {
+    const lidJid   = lastOwnerJid || "none";
+    const phoneJid = `${OWNER_PHONE}@s.whatsapp.net`;
+    console.log(`[TEST] lidMap size=${lidMap.size} entries: ${JSON.stringify([...lidMap.entries()])}`);
+    console.log(`[TEST] lastOwnerJid=${lidJid} phoneJid=${phoneJid}`);
+
+    const results = {};
+    for (const [label, jid] of [["lid", lidJid], ["phone", phoneJid]]) {
+        if (jid === "none") { results[label] = "skipped (no lastOwnerJid)"; continue; }
+        try {
+            const sent = await sock.sendMessage(jid, { text: `[TEST ${label}] ${new Date().toISOString()}` });
+            results[label] = { status: sent?.status, id: sent?.key?.id };
+            console.log(`[TEST] ${label} (${jid}) → status=${sent?.status} id=${sent?.key?.id}`);
+        } catch (e) {
+            results[label] = { error: e.message };
+            console.error(`[TEST] ${label} (${jid}) → error: ${e.message}`);
+        }
+    }
+    res.json({ results, lidMap: Object.fromEntries(lidMap), lastOwnerJid: lidJid });
 });
 
 app.post("/reset-session", async (_req, res) => {
