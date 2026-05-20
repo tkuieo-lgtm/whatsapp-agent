@@ -660,11 +660,9 @@ app.post("/send", async (req, res) => {
     try {
         const constructedJid  = chat_id ? normalizeJid(chat_id) : normalizeJid(phone || OWNER_PHONE);
         const isGroupTarget   = constructedJid.endsWith("@g.us");
-        // Resolve @lid → @s.whatsapp.net before sending (WA only routes outgoing to @s.whatsapp.net)
-        const resolvedOwner   = lastOwnerJid ? resolveJid(lastOwnerJid) : null;
-        const ownerJidUsable  = resolvedOwner && !resolvedOwner.endsWith("@lid");
-        const jid = (!isGroupTarget && ownerJidUsable) ? resolvedOwner : constructedJid;
-        console.log(`[SEND] constructedJid=${constructedJid} lastOwnerJid=${lastOwnerJid ?? "none"} resolved=${resolvedOwner ?? "none"} → using=${jid}`);
+        // Send directly to lastOwnerJid (may be @lid) — testing if WA prefers @lid for routing
+        const jid = (!isGroupTarget && lastOwnerJid) ? lastOwnerJid : constructedJid;
+        console.log(`[SEND] constructedJid=${constructedJid} lastOwnerJid=${lastOwnerJid ?? "none"} → using=${jid}`);
         const sent = await sock.sendMessage(jid, { text: message });
         console.log(`[SEND] → ${jid} | status=${sent?.status} id=${sent?.key?.id}`);
         res.json({ success: true });
@@ -685,10 +683,8 @@ app.post("/send-voice", async (req, res) => {
     try {
         const constructedJid  = normalizeJid(to);
         const isGroupTarget   = constructedJid.endsWith("@g.us");
-        const resolvedOwner   = lastOwnerJid ? resolveJid(lastOwnerJid) : null;
-        const ownerJidUsable  = resolvedOwner && !resolvedOwner.endsWith("@lid");
-        const jid = (!isGroupTarget && ownerJidUsable) ? resolvedOwner : constructedJid;
-        console.log(`[VOICE-OUT] constructedJid=${constructedJid} lastOwnerJid=${lastOwnerJid ?? "none"} resolved=${resolvedOwner ?? "none"} → using=${jid}`);
+        const jid = (!isGroupTarget && lastOwnerJid) ? lastOwnerJid : constructedJid;
+        console.log(`[VOICE-OUT] constructedJid=${constructedJid} lastOwnerJid=${lastOwnerJid ?? "none"} → using=${jid}`);
         const buffer = Buffer.from(audio, "base64");
         const sent   = await sock.sendMessage(jid, {
             audio: buffer,
