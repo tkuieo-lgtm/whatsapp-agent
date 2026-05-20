@@ -151,6 +151,37 @@ function resolveJid(jid) {
     return jid;
 }
 
+async function resolveJidLive(jid) {
+    // 1. Already resolved in map
+    const cached = resolveJid(jid);
+    if (!cached.endsWith("@lid")) return cached;
+
+    // 2. Live lookup via sock.onWhatsApp — only for DMs from owner
+    if (sock && isConnected) {
+        try {
+            console.log(`[LID] Live lookup for ${jid} via sock.onWhatsApp(${OWNER_PHONE})`);
+            const results = await sock.onWhatsApp(OWNER_PHONE);
+            if (results?.length) {
+                const info = results[0];
+                if (info.lid && info.jid) {
+                    lidMap.set(info.lid, info.jid);
+                    _saveLidToDB(info.lid, info.jid);
+                    console.log(`[LID] Live resolved: ${info.lid} → ${info.jid}`);
+                    if (info.lid === jid) return info.jid;
+                }
+            }
+        } catch (e) {
+            console.warn(`[LID] Live lookup failed: ${e.message}`);
+        }
+    }
+
+    // 3. Fallback: assume it's the owner (only owner sends DMs to the bot)
+    const ownerJid = `${OWNER_PHONE}@s.whatsapp.net`;
+    console.warn(`[LID] Fallback: treating ${jid} as owner (${ownerJid})`);
+    lidMap.set(jid, ownerJid);   // cache to avoid repeated lookups
+    return ownerJid;
+}
+
 async function _saveLidToDB(lid, phoneJid) {
     const pool = getPool();
     if (!pool) return;
@@ -481,10 +512,10 @@ async function connectToWhatsApp() {
 
             const rawJid    = msg.key.remoteJid || "";
             const isGroup   = rawJid.endsWith("@g.us");
-            // Resolve @lid → @s.whatsapp.net for both DM and group participant JIDs
-            const jid       = isGroup ? rawJid : resolveJid(rawJid);
             const rawSender = isGroup ? (msg.key.participant || rawJid) : rawJid;
-            const senderJid = resolveJid(rawSender);
+            // For DMs: use live resolution with fallback; for groups: sync only
+            const jid       = isGroup ? rawJid : await resolveJidLive(rawJid);
+            const senderJid = isGroup ? resolveJid(rawSender) : jid;
             const senderPhone = jidToPhone(senderJid);
             if (rawJid !== jid || rawSender !== senderJid) {
                 console.log(`[LID] Resolved: ${rawJid} → ${jid} | sender ${rawSender} → ${senderJid}`);
