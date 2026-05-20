@@ -662,12 +662,16 @@ app.post("/send", async (req, res) => {
         const isGroupTarget   = constructedJid.endsWith("@g.us");
         // Send directly to lastOwnerJid (may be @lid) — testing if WA prefers @lid for routing
         const jid = (!isGroupTarget && lastOwnerJid) ? lastOwnerJid : constructedJid;
-        console.log(`[SEND] constructedJid=${constructedJid} lastOwnerJid=${lastOwnerJid ?? "none"} → using=${jid}`);
-        const sent = await sock.sendMessage(jid, { text: message });
-        console.log(`[SEND] → ${jid} | status=${sent?.status} id=${sent?.key?.id}`);
+        console.log(`[SEND] jid=${jid} msgLen=${message.length} constructedJid=${constructedJid} lastOwnerJid=${lastOwnerJid ?? "none"}`);
+        let sent, sendErr;
+        try { sent = await sock.sendMessage(jid, { text: message }); }
+        catch (e) { sendErr = e; }
+        console.log(`[SEND] response: status=${sent?.status} id=${sent?.key?.id} error=${sendErr?.message ?? "none"}`);
+        console.log(`[SEND] full response: ${JSON.stringify(sent ?? null)}`);
+        if (sendErr) throw sendErr;
         res.json({ success: true });
     } catch (err) {
-        console.error("[SEND] Failed:", err.message);
+        console.error("[SEND] Failed:", err.message, err.stack?.split("\n")[1]);
         res.status(500).json({ success: false, error: err.message });
     }
 });
@@ -684,17 +688,22 @@ app.post("/send-voice", async (req, res) => {
         const constructedJid  = normalizeJid(to);
         const isGroupTarget   = constructedJid.endsWith("@g.us");
         const jid = (!isGroupTarget && lastOwnerJid) ? lastOwnerJid : constructedJid;
-        console.log(`[VOICE-OUT] constructedJid=${constructedJid} lastOwnerJid=${lastOwnerJid ?? "none"} → using=${jid}`);
         const buffer = Buffer.from(audio, "base64");
-        const sent   = await sock.sendMessage(jid, {
-            audio: buffer,
-            mimetype: "audio/ogg; codecs=opus",
-            ptt: true,
-        });
-        console.log(`[VOICE-OUT] → ${jid} | status=${sent?.status} id=${sent?.key?.id}`);
+        console.log(`[VOICE-OUT] jid=${jid} audioBytes=${buffer.length} constructedJid=${constructedJid} lastOwnerJid=${lastOwnerJid ?? "none"}`);
+        let sent, sendErr;
+        try {
+            sent = await sock.sendMessage(jid, {
+                audio: buffer,
+                mimetype: "audio/ogg; codecs=opus",
+                ptt: true,
+            });
+        } catch (e) { sendErr = e; }
+        console.log(`[VOICE-OUT] response: status=${sent?.status} id=${sent?.key?.id} error=${sendErr?.message ?? "none"}`);
+        console.log(`[VOICE-OUT] full response: ${JSON.stringify(sent ?? null)}`);
+        if (sendErr) throw sendErr;
         res.json({ status: "sent" });
     } catch (err) {
-        console.error("[VOICE-OUT] Failed:", err.message);
+        console.error("[VOICE-OUT] Failed:", err.message, err.stack?.split("\n")[1]);
         res.status(500).json({ error: err.message });
     }
 });
